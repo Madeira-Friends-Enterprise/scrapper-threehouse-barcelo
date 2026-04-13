@@ -1,8 +1,6 @@
 name: scrape
 
 on:
-  schedule:
-    - cron: "0 */4 * * *"   # every 4 hours
   workflow_dispatch: {}
 
 concurrency:
@@ -38,6 +36,8 @@ jobs:
         env:
           GOOGLE_SHEET_ID: ${{ vars.GOOGLE_SHEET_ID }}
           GOOGLE_SHEET_GID: ${{ vars.GOOGLE_SHEET_GID }}
+          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+          MIN_PRICED_ROWS: "100"
           HEADLESS: "false"
           DISPLAY: ":99"
         run: |
@@ -52,6 +52,8 @@ jobs:
           name: scraper-debug
           path: |
             *.log
-            *.html
+            threehouse_dump.html
+            barcelo_funchal_dump.html
+            barcelo_schema_dump.json
             barcelo_hotels.json
           if-no-files-found: ignore

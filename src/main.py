@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from collections import Counter
 
@@ -71,6 +72,16 @@ def cli() -> int:
 
     if not rows:
         log.error("no rows scraped, nothing to write")
+        return 2
+
+    with_price = sum(1 for r in rows if r.price is not None)
+    min_priced = int(os.getenv("MIN_PRICED_ROWS", "50"))
+    if with_price < min_priced:
+        log.error(
+            "safety: only %d priced rows (< %d minimum). Refusing to overwrite sheet; prior data preserved.",
+            with_price,
+            min_priced,
+        )
         return 2
 
     if args.dry_run:

@@ -41,11 +41,15 @@ def write_rows(
     sheet_gid: int,
     rows: Iterable[PriceRow],
 ) -> int:
+    rows_list = list(rows)
+    if not rows_list:
+        raise ValueError("write_rows refuses empty rows list (would wipe the sheet)")
+
     client = _client(service_account_path)
     sh = client.open_by_key(sheet_id)
     ws = _worksheet_by_gid(sh, sheet_gid)
 
-    values = [HEADER] + [r.to_row() for r in rows]
+    values = [HEADER] + [r.to_row() for r in rows_list]
     ws.clear()
     ws.update(range_name="A1", values=values, value_input_option="USER_ENTERED")
     log.info("sheets: wrote %d rows to '%s' (gid=%d)", len(values) - 1, ws.title, sheet_gid)

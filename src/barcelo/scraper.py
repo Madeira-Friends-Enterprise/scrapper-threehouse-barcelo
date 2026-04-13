@@ -5,10 +5,11 @@ import logging
 import re
 from calendar import monthrange
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any, Iterable
 
 from playwright.sync_api import BrowserContext
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from ..models import PriceRow
 from .discover import BarceloHotel
@@ -19,6 +20,18 @@ BRAND = "Barceló"
 AVAILABILITY_URL = (
     "https://reservation-api.barcelo.com/hotel-availability-adapter/v1/hotels/{id}/availability"
 )
+
+DATE_KEYS = (
+    "date", "day", "checkIn", "stayDate", "stay_date",
+    "arrivalDate", "night", "nightDate",
+)
+PRICE_KEYS = (
+    "totalAmount", "amount", "price", "minPrice", "rate",
+    "nightlyRate", "bestPrice", "finalPrice", "grossPrice", "netPrice",
+)
+PRICE_SUBKEYS = ("amount", "value", "gross", "total", "min", "final")
+
+_SCHEMA_LOGGED = False
 
 
 class BarceloFetchError(RuntimeError):
@@ -39,40 +52,76 @@ def _month_windows(start: date, end: date) -> list[tuple[date, date]]:
     return windows
 
 
+def _coerce_price(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        raw = re.sub(r"[^\d.,-]", "", value).strip()
+        if not raw:
+            return None
+        if "," in raw and "." in raw:
+            raw = raw.replace(".", "").replace(",", ".")
+        elif "," in raw:
+            raw = raw.replace(",", ".")
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+    if isinstance(value, dict):
+        for k in PRICE_SUBKEYS:
+            if k in value and value[k] is not None:
+                p = _coerce_price(value[k])
+                if p is not None:
+                    return p
+    return None
+
+
 def _iter_daily_prices(payload: Any) -> Iterable[tuple[date, float | None, bool]]:
-    stack = [payload]
+    stack: list[Any] = [payload]
     while stack:
         node = stack.pop()
         if isinstance(node, dict):
-            d = (
-                node.get("date")
-                or node.get("day")
-                or node.get("checkIn")
-                or node.get("stayDate")
-            )
-            price_candidate = None
-            for key in ("totalAmount", "amount", "price", "minPrice", "rate", "nightlyRate"):
-                if key in node and node[key] is not None:
-                    price_candidate = node[key]
+            d_raw: Any = None
+            for k in DATE_KEYS:
+                if k in node and node[k]:
+                    d_raw = node[k]
                     break
-            if isinstance(price_candidate, dict):
-                price_candidate = (
-                    price_candidate.get("amount")
-                    or price_candidate.get("value")
-                    or price_candidate.get("gross")
-                )
-            if isinstance(d, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", d[:10]):
+            price_candidate: Any = None
+            for k in PRICE_KEYS:
+                if k in node and node[k] is not None:
+                    price_candidate = node[k]
+                    break
+            if isinstance(d_raw, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", d_raw):
                 try:
-                    dd = date.fromisoformat(d[:10])
-                    price = float(price_candidate) if price_candidate is not None else None
-                    avail = bool(node.get("available", price is not None))
-                    yield dd, price, avail
+                    dd = date.fromisoformat(d_raw[:10])
+                    price = _coerce_price(price_candidate)
+                    avail = node.get("available")
+                    if avail is None:
+                        avail = node.get("isAvailable", price is not None)
+                    yield dd, price, bool(avail)
                     continue
                 except (TypeError, ValueError):
                     pass
             stack.extend(node.values())
         elif isinstance(node, list):
             stack.extend(node)
+
+
+def _log_schema_sample(data: Any) -> None:
+    try:
+        top_keys = list(data.keys()) if isinstance(data, dict) else f"<{type(data).__name__}>"
+        log.info("barcelo: schema top-level keys: %s", top_keys)
+        sample = json.dumps(data, ensure_ascii=False, indent=2, default=str)[:1500]
+        log.info("barcelo: schema sample (1500 chars):\n%s", sample)
+        Path("barcelo_schema_dump.json").write_text(
+            json.dumps(data, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        log.info("barcelo: schema dumped to barcelo_schema_dump.json")
+    except Exception as exc:
+        log.warning("barcelo: schema log failed: %s", exc)
 
 
 @retry(
@@ -84,7 +133,7 @@ def _iter_daily_prices(payload: Any) -> Iterable[tuple[date, float | None, bool]
 def _fetch_window_playwright(
     page, hotel: BarceloHotel, check_in: date, check_out: date
 ) -> list[tuple[date, float | None, bool]]:
-    """Use Playwright's request context (carries _abck cookie from page navigation)."""
+    global _SCHEMA_LOGGED
     body = {
         "checkIn": check_in.isoformat(),
         "checkOut": check_out.isoformat(),
@@ -110,28 +159,49 @@ def _fetch_window_playwright(
     except Exception as exc:
         raise BarceloFetchError(f"network: {exc}") from exc
 
-    if resp.status >= 500 or resp.status == 403:
-        raise BarceloFetchError(f"status {resp.status}")
-    if not resp.ok:
-        log.debug("barcelo %s %s..%s -> %s", hotel.slug, check_in, check_out, resp.status)
+    status = resp.status
+    try:
+        body_text = resp.text()
+    except Exception:
+        body_text = ""
+    preview = body_text[:180].replace("\n", " ")
+    log.info(
+        "barcelo %s %s..%s -> status=%d len=%d preview=%r",
+        hotel.slug, check_in, check_out, status, len(body_text), preview,
+    )
+
+    if status >= 500 or status in (401, 403, 429):
+        raise BarceloFetchError(f"status {status}")
+    if status != 200:
         return []
+
     try:
         data = resp.json()
-    except Exception:
+    except Exception as exc:
+        log.warning("barcelo: non-JSON response %s..%s: %s", check_in, check_out, exc)
         return []
-    return list(_iter_daily_prices(data))
+
+    if not _SCHEMA_LOGGED:
+        _log_schema_sample(data)
+        _SCHEMA_LOGGED = True
+
+    rows = list(_iter_daily_prices(data))
+    priced = sum(1 for _, p, _ in rows if p is not None)
+    log.info(
+        "barcelo %s..%s -> %d day rows (%d priced)",
+        check_in, check_out, len(rows), priced,
+    )
+    return rows
 
 
 def scrape_barcelo_hotel(ctx: BrowserContext, hotel: BarceloHotel, end_date: date) -> list[PriceRow]:
     today = date.today()
     captured: dict[date, tuple[float | None, bool]] = {}
 
-    # Open the hotel page in a real browser so Akamai's JS challenge sets the _abck cookie.
     page = ctx.new_page()
     log.info("barcelo: warming Akamai session via %s", hotel.page_url)
     try:
         page.goto(hotel.page_url, wait_until="domcontentloaded", timeout=60000)
-        # Simulate human interaction so Akamai's sensor_data fires.
         for y in (200, 600, 1200, 800, 400):
             page.mouse.move(500 + y // 3, 300 + y // 5)
             page.evaluate(f"window.scrollTo(0, {y})")
@@ -140,7 +210,6 @@ def scrape_barcelo_hotel(ctx: BrowserContext, hotel: BarceloHotel, end_date: dat
             page.wait_for_load_state("networkidle", timeout=20000)
         except Exception:
             pass
-        # Wait for _abck cookie up to 25s.
         for _ in range(25):
             cookies = ctx.cookies()
             if any(c["name"].startswith("_abck") for c in cookies):
