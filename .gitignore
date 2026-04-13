@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+credentials/*.json
+!credentials/.gitkeep
+.playwright/
+barcelo_hotels.json
+*.log
+
+.vercel

@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html, body { height: 100%; }
+body { @apply bg-paper text-ink antialiased; }
+
+.card { @apply bg-white rounded-xl shadow-sm border border-black/5 p-4; }
+.btn  { @apply inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition; }
+.btn-primary { @apply bg-accent text-white hover:opacity-90; }
+.btn-ghost   { @apply bg-black/5 hover:bg-black/10; }
+.tab  { @apply px-3 py-2 rounded-md text-sm font-medium text-ink/70 hover:bg-black/5; }
+.tab-active { @apply bg-ink text-white hover:bg-ink/90; }
