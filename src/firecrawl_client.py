@@ -43,6 +43,10 @@ def scrape_markdown(
         "waitFor": wait_for_ms,
         "timeout": timeout_ms,
         "onlyMainContent": only_main_content,
+        # Render from an EUR-zone IP so the Mirai widget serves Portuguese
+        # hotels in euros. "PT" breaks the widget (renders K-notation with no
+        # currency); ES/FR/DE all produce € cleanly. ES is the closest geo.
+        "location": {"country": "ES"},
     }
     if actions:
         payload["actions"] = actions
