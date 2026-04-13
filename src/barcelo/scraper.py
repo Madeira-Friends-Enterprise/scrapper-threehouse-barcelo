@@ -7,7 +7,6 @@ from calendar import monthrange
 from datetime import date, timedelta
 from typing import Any, Iterable
 
-from curl_cffi import requests as cffi
 from playwright.sync_api import BrowserContext
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
@@ -76,41 +75,16 @@ def _iter_daily_prices(payload: Any) -> Iterable[tuple[date, float | None, bool]
             stack.extend(node)
 
 
-def _make_session(hotel: BarceloHotel) -> cffi.Session:
-    """Open a cffi session, warm it up by visiting the hotel page (gets Akamai cookies)."""
-    s = cffi.Session(impersonate="chrome124")
-    warmup_headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/130.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "pt-PT,pt;q=0.9,en;q=0.8",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Upgrade-Insecure-Requests": "1",
-    }
-    try:
-        r = s.get("https://www.barcelo.com/pt-pt/", headers=warmup_headers, timeout=30)
-        log.info("barcelo: session warmup root status=%s cookies=%d", r.status_code, len(s.cookies))
-        r = s.get(hotel.page_url, headers=warmup_headers, timeout=30)
-        log.info("barcelo: session warmup hotel status=%s cookies=%d", r.status_code, len(s.cookies))
-    except Exception as exc:
-        log.warning("barcelo: warmup failed (%s)", exc)
-    return s
-
-
 @retry(
     reraise=True,
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1.5, min=2, max=15),
     retry=retry_if_exception_type(BarceloFetchError),
 )
-def _fetch_window_cffi(
-    session: cffi.Session, hotel: BarceloHotel, check_in: date, check_out: date
+def _fetch_window_playwright(
+    page, hotel: BarceloHotel, check_in: date, check_out: date
 ) -> list[tuple[date, float | None, bool]]:
+    """Use Playwright's request context (carries _abck cookie from page navigation)."""
     body = {
         "checkIn": check_in.isoformat(),
         "checkOut": check_out.isoformat(),
@@ -129,25 +103,20 @@ def _fetch_window_cffi(
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-site",
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/130.0.0.0 Safari/537.36"
-        ),
     }
     url = AVAILABILITY_URL.format(id=hotel.hotel_id)
     try:
-        r = session.post(url, json=body, headers=headers, timeout=30)
+        resp = page.request.post(url, data=json.dumps(body), headers=headers, timeout=30000)
     except Exception as exc:
         raise BarceloFetchError(f"network: {exc}") from exc
 
-    if r.status_code >= 500 or r.status_code == 403:
-        raise BarceloFetchError(f"status {r.status_code}")
-    if not r.ok:
-        log.debug("barcelo %s %s..%s -> %s", hotel.slug, check_in, check_out, r.status_code)
+    if resp.status >= 500 or resp.status == 403:
+        raise BarceloFetchError(f"status {resp.status}")
+    if not resp.ok:
+        log.debug("barcelo %s %s..%s -> %s", hotel.slug, check_in, check_out, resp.status)
         return []
     try:
-        data = r.json()
+        data = resp.json()
     except Exception:
         return []
     return list(_iter_daily_prices(data))
@@ -156,18 +125,36 @@ def _fetch_window_cffi(
 def scrape_barcelo_hotel(ctx: BrowserContext, hotel: BarceloHotel, end_date: date) -> list[PriceRow]:
     today = date.today()
     captured: dict[date, tuple[float | None, bool]] = {}
-    session = _make_session(hotel)
+
+    # Open the hotel page in a real browser so Akamai's JS challenge sets the _abck cookie.
+    page = ctx.new_page()
+    log.info("barcelo: warming Akamai session via %s", hotel.page_url)
+    try:
+        page.goto(hotel.page_url, wait_until="domcontentloaded", timeout=45000)
+        # Akamai's sensor_data POST happens asynchronously; give it time.
+        page.wait_for_timeout(6000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+        cookies = ctx.cookies()
+        abck_present = any(c["name"].startswith("_abck") for c in cookies)
+        log.info("barcelo: cookies=%d _abck=%s", len(cookies), abck_present)
+    except Exception as exc:
+        log.warning("barcelo: warmup nav failed (%s)", exc)
 
     for win_start, win_end in _month_windows(today, end_date):
         check_out = win_end + timedelta(days=1)
         try:
-            rows = _fetch_window_cffi(session, hotel, win_start, check_out)
+            rows = _fetch_window_playwright(page, hotel, win_start, check_out)
         except BarceloFetchError as exc:
             log.warning("barcelo %s %s..%s failed: %s", hotel.slug, win_start, win_end, exc)
             continue
         for d, price, avail in rows:
             if win_start <= d <= win_end:
                 captured.setdefault(d, (price, avail))
+
+    page.close()
 
     out: list[PriceRow] = []
     d = today

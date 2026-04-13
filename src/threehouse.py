@@ -24,34 +24,28 @@ RATES_URL = (
 )
 
 
-def _months_between(start: date, end: date) -> list[tuple[int, int]]:
-    months: list[tuple[int, int]] = []
-    y, m = start.year, start.month
-    while (y, m) <= (end.year, end.month):
-        months.append((y, m))
-        m += 1
-        if m > 12:
-            m = 1
-            y += 1
-    return months
-
-
 def _iter_prices_from_json(payload: Any) -> Iterable[tuple[date, float | None, bool]]:
-    """Best-effort walker: Mirai payloads vary, so we scan recursively."""
     stack = [payload]
     while stack:
         node = stack.pop()
         if isinstance(node, dict):
-            d = node.get("date") or node.get("day") or node.get("checkin")
-            p = (
-                node.get("price")
-                or node.get("rate")
-                or node.get("minPrice")
-                or node.get("amount")
+            d = (
+                node.get("date")
+                or node.get("day")
+                or node.get("checkin")
+                or node.get("checkIn")
+                or node.get("dia")
             )
-            if isinstance(d, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+            p = None
+            for k in ("price", "rate", "minPrice", "amount", "minRate", "totalPrice", "min", "value"):
+                if k in node and node[k] is not None:
+                    p = node[k]
+                    break
+            if isinstance(p, dict):
+                p = p.get("amount") or p.get("value") or p.get("gross") or p.get("min")
+            if isinstance(d, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", d[:10]):
                 try:
-                    dd = date.fromisoformat(d)
+                    dd = date.fromisoformat(d[:10])
                     price = float(p) if p is not None else None
                     avail = bool(node.get("available", price is not None))
                     yield dd, price, avail
@@ -64,18 +58,28 @@ def _iter_prices_from_json(payload: Any) -> Iterable[tuple[date, float | None, b
 
 
 def _collect_dom_prices(page: Page) -> list[tuple[date, float | None]]:
-    """Fallback: read the visible calendar DOM directly."""
+    """Read the rendered calendar DOM. Mirai widget renders day cells with prices."""
     js = r"""
     () => {
       const out = [];
-      const cells = document.querySelectorAll('[data-date], [data-day-date], .mirai-day, .day');
+      // Try several common Mirai/calendar cell shapes.
+      const cells = document.querySelectorAll(
+        '[data-date], [data-day-date], [data-iso], [data-day], '
+        + '.mirai-day, .day, .calendar-day, .rates-calendar__day, [class*="day-cell"]'
+      );
       cells.forEach(el => {
-        const d = el.getAttribute('data-date') || el.getAttribute('data-day-date');
+        const d = el.getAttribute('data-date')
+          || el.getAttribute('data-day-date')
+          || el.getAttribute('data-iso')
+          || el.getAttribute('data-day');
         if (!d) return;
-        const priceEl = el.querySelector('.price, [class*="price"], [class*="amount"]') || el;
-        const txt = (priceEl.innerText || priceEl.textContent || '').replace(/\s+/g, ' ').trim();
-        const m = txt.match(/(\d{1,4}[.,]?\d{0,2})\s*€|€\s*(\d{1,4}[.,]?\d{0,2})/);
-        const price = m ? parseFloat((m[1] || m[2]).replace(',', '.')) : null;
+        const txt = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+        const m = txt.match(/(\d{1,4}[.,]\d{1,2})\s*€|(\d{1,4})\s*€|€\s*(\d{1,4}(?:[.,]\d{1,2})?)/);
+        let price = null;
+        if (m) {
+          const raw = m[1] || m[2] || m[3];
+          price = parseFloat(raw.replace(',', '.'));
+        }
         out.push([d, price]);
       });
       return out;
@@ -85,30 +89,74 @@ def _collect_dom_prices(page: Page) -> list[tuple[date, float | None]]:
     rows: list[tuple[date, float | None]] = []
     for d, p in raw:
         try:
-            rows.append((date.fromisoformat(d[:10]), p))
-        except ValueError:
+            rows.append((date.fromisoformat(str(d)[:10])), p) if False else None  # noqa
+        except Exception:
+            pass
+    out: list[tuple[date, float | None]] = []
+    for d, p in raw:
+        try:
+            out.append((date.fromisoformat(str(d)[:10]), p))
+        except Exception:
             continue
-    return rows
+    return out
+
+
+def _wait_for_widget(page: Page) -> bool:
+    """Wait until the Mirai widget mounts and shows day cells with text."""
+    try:
+        page.wait_for_function(
+            """() => {
+                const root = document.querySelector('[data-twin="rates"]');
+                if (!root || root.children.length === 0) return false;
+                // Look for any day-like element with euro text.
+                const html = root.innerText || '';
+                return /€/.test(html);
+            }""",
+            timeout=60000,
+        )
+        return True
+    except PWTimeout:
+        log.warning("threehouse: widget did not mount within 60s")
+        return False
+
+
+def _click_next_month(page: Page) -> bool:
+    """Click whatever 'next month' control exists. Try a few variants."""
+    selectors = [
+        "[aria-label*='ext' i]",            # Next / Próximo / Próximo mês
+        "[aria-label*='igui' i]",           # Seguinte
+        "button:has-text('›')",
+        "button:has-text('>')",
+        "[class*='next'][class*='month']",
+        ".calendar-next, .mirai-calendar-next, button.next",
+    ]
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() and loc.is_visible():
+                loc.click(timeout=2500)
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def scrape_threehouse(ctx: BrowserContext, end_date: date) -> list[PriceRow]:
-    """Walk the Mirai calendar month by month and collect daily prices."""
     today = date.today()
-    targets = _months_between(today, end_date)
+    months_target = (end_date.year - today.year) * 12 + (end_date.month - today.month)
+
     captured: dict[date, tuple[float | None, bool]] = {}
+    seen_urls: list[str] = []
 
     page = ctx.new_page()
-    seen_urls: list[str] = []
 
     def on_response(resp):
         try:
             url = resp.url
             ct = resp.headers.get("content-type", "")
-            if "json" in ct or "javascript" in ct:
+            if "json" in ct or "rates" in url or "availability" in url or "calendar" in url:
                 seen_urls.append(f"{resp.status} {ct[:30]} {url[:140]}")
-            if resp.status != 200:
-                return
-            if "json" not in ct:
+            if resp.status != 200 or "json" not in ct:
                 return
             try:
                 data = resp.json()
@@ -121,63 +169,41 @@ def scrape_threehouse(ctx: BrowserContext, end_date: date) -> list[PriceRow]:
             for d, price, avail in _iter_prices_from_json(data):
                 captured.setdefault(d, (price, avail))
             if len(captured) > n_before:
-                log.info("threehouse: extracted %d prices from %s", len(captured) - n_before, url[:100])
+                log.info("threehouse: +%d prices from %s", len(captured) - n_before, url[:100])
         except Exception as exc:
-            log.debug("threehouse response hook error: %s", exc)
+            log.debug("threehouse hook error: %s", exc)
 
     page.on("response", on_response)
 
     log.info("threehouse: opening Mirai rates page")
     try:
-        page.goto(RATES_URL, wait_until="networkidle")
+        page.goto(RATES_URL, wait_until="domcontentloaded", timeout=45000)
     except PWTimeout:
-        log.warning("threehouse: networkidle timeout, continuing")
+        log.warning("threehouse: domcontentloaded timeout")
 
-    # Give the widget time to render the first month
-    page.wait_for_timeout(2500)
+    mounted = _wait_for_widget(page)
+    if not mounted:
+        log.warning("threehouse: widget never mounted; URLs seen (%d):", len(seen_urls))
+        for u in seen_urls[:30]:
+            log.warning("  %s", u)
+        try:
+            from pathlib import Path as _P
+            _P("threehouse_dump.html").write_text(page.content(), encoding="utf-8")
+        except Exception:
+            pass
 
-    # Walk forward month by month. Mirai's "next" control varies; try multiple selectors.
-    next_selectors = [
-        "[aria-label*='xt']",  # next / próximo / próximo mes
-        "button.next",
-        ".calendar-next",
-        ".mirai-calendar-next",
-        "[class*='next'][class*='month']",
-    ]
-
-    months_to_advance = max(len(targets) - 1, 0)
-    for i in range(months_to_advance):
-        clicked = False
-        for sel in next_selectors:
-            try:
-                locator = page.locator(sel).first
-                if locator.count() and locator.is_visible():
-                    locator.click(timeout=2500)
-                    clicked = True
-                    break
-            except Exception:
-                continue
-        if not clicked:
-            log.info("threehouse: could not find next-month control at step %d, stopping walk", i)
-            break
-        page.wait_for_timeout(1500)
-
-    # Give hooks a final moment + do a DOM sweep as backup
-    page.wait_for_timeout(1500)
+    # Scrape current month, then click next month until exhausted or limit hit.
+    page.wait_for_timeout(2000)
     for d, p in _collect_dom_prices(page):
         captured.setdefault(d, (p, p is not None))
 
-    if not captured:
-        log.warning("threehouse: NO prices captured. URLs seen (%d):", len(seen_urls))
-        for u in seen_urls[:50]:
-            log.warning("  %s", u)
-        try:
-            html = page.content()
-            from pathlib import Path as _P
-            _P("threehouse_dump.html").write_text(html, encoding="utf-8")
-            log.warning("threehouse: dumped page HTML (%d bytes)", len(html))
-        except Exception:
-            pass
+    for i in range(min(months_target, 24)):
+        if not _click_next_month(page):
+            log.info("threehouse: next-month control not found at step %d", i)
+            break
+        page.wait_for_timeout(2500)
+        for d, p in _collect_dom_prices(page):
+            captured.setdefault(d, (p, p is not None))
 
     page.close()
 
