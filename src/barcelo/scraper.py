@@ -130,16 +130,28 @@ def scrape_barcelo_hotel(ctx: BrowserContext, hotel: BarceloHotel, end_date: dat
     page = ctx.new_page()
     log.info("barcelo: warming Akamai session via %s", hotel.page_url)
     try:
-        page.goto(hotel.page_url, wait_until="domcontentloaded", timeout=45000)
-        # Akamai's sensor_data POST happens asynchronously; give it time.
-        page.wait_for_timeout(6000)
+        page.goto(hotel.page_url, wait_until="domcontentloaded", timeout=60000)
+        # Simulate human interaction so Akamai's sensor_data fires.
+        for y in (200, 600, 1200, 800, 400):
+            page.mouse.move(500 + y // 3, 300 + y // 5)
+            page.evaluate(f"window.scrollTo(0, {y})")
+            page.wait_for_timeout(800)
         try:
-            page.wait_for_load_state("networkidle", timeout=15000)
+            page.wait_for_load_state("networkidle", timeout=20000)
         except Exception:
             pass
+        # Wait for _abck cookie up to 25s.
+        for _ in range(25):
+            cookies = ctx.cookies()
+            if any(c["name"].startswith("_abck") for c in cookies):
+                break
+            page.wait_for_timeout(1000)
         cookies = ctx.cookies()
-        abck_present = any(c["name"].startswith("_abck") for c in cookies)
-        log.info("barcelo: cookies=%d _abck=%s", len(cookies), abck_present)
+        abck = next((c for c in cookies if c["name"].startswith("_abck")), None)
+        log.info(
+            "barcelo: cookies=%d _abck=%s (len=%s)",
+            len(cookies), bool(abck), len(abck["value"]) if abck else 0,
+        )
     except Exception as exc:
         log.warning("barcelo: warmup nav failed (%s)", exc)
 

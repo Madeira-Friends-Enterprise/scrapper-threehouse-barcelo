@@ -25,6 +25,7 @@ jobs:
         run: |
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
+          sudo apt-get update && sudo apt-get install -y xvfb
 
       - name: Write service account key
         env:
@@ -33,12 +34,16 @@ jobs:
           mkdir -p credentials
           printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > credentials/service_account.json
 
-      - name: Run scraper
+      - name: Run scraper (headed via xvfb)
         env:
           GOOGLE_SHEET_ID: ${{ vars.GOOGLE_SHEET_ID }}
           GOOGLE_SHEET_GID: ${{ vars.GOOGLE_SHEET_GID }}
-          HEADLESS: "true"
-        run: python -m src.main -v
+          HEADLESS: "false"
+          DISPLAY: ":99"
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 &
+          sleep 2
+          python -m src.main -v
 
       - name: Upload artifacts
         if: always()

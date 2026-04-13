@@ -49,7 +49,7 @@ export async function fetchRows(): Promise<PriceRow[]> {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `${title}!A1:K100000`,
-    valueRenderOption: "UNFORMATTED_VALUE",
+    valueRenderOption: "FORMATTED_VALUE",
   });
   const values = (res.data.values ?? []) as string[][];
   if (values.length === 0) return [];
