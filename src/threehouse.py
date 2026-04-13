@@ -98,15 +98,16 @@ def scrape_threehouse(ctx: BrowserContext, end_date: date) -> list[PriceRow]:
     captured: dict[date, tuple[float | None, bool]] = {}
 
     page = ctx.new_page()
+    seen_urls: list[str] = []
 
     def on_response(resp):
         try:
             url = resp.url
-            if "mirai.com" not in url:
-                return
+            ct = resp.headers.get("content-type", "")
+            if "json" in ct or "javascript" in ct:
+                seen_urls.append(f"{resp.status} {ct[:30]} {url[:140]}")
             if resp.status != 200:
                 return
-            ct = resp.headers.get("content-type", "")
             if "json" not in ct:
                 return
             try:
@@ -116,8 +117,11 @@ def scrape_threehouse(ctx: BrowserContext, end_date: date) -> list[PriceRow]:
                 if not body or body[0] not in "{[":
                     return
                 data = json.loads(body)
+            n_before = len(captured)
             for d, price, avail in _iter_prices_from_json(data):
                 captured.setdefault(d, (price, avail))
+            if len(captured) > n_before:
+                log.info("threehouse: extracted %d prices from %s", len(captured) - n_before, url[:100])
         except Exception as exc:
             log.debug("threehouse response hook error: %s", exc)
 
@@ -162,6 +166,18 @@ def scrape_threehouse(ctx: BrowserContext, end_date: date) -> list[PriceRow]:
     page.wait_for_timeout(1500)
     for d, p in _collect_dom_prices(page):
         captured.setdefault(d, (p, p is not None))
+
+    if not captured:
+        log.warning("threehouse: NO prices captured. URLs seen (%d):", len(seen_urls))
+        for u in seen_urls[:50]:
+            log.warning("  %s", u)
+        try:
+            html = page.content()
+            from pathlib import Path as _P
+            _P("threehouse_dump.html").write_text(html, encoding="utf-8")
+            log.warning("threehouse: dumped page HTML (%d bytes)", len(html))
+        except Exception:
+            pass
 
     page.close()
 
