@@ -10,3 +10,5 @@ barcelo_hotels.json
 *.log
 
 .vercel
+_fc.json
+_mirai.json

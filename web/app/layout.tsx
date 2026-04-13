@@ -21,8 +21,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <header className="border-b border-black/5 bg-white/80 backdrop-blur sticky top-0 z-10">
           <div className="mx-auto max-w-7xl px-4 h-14 flex items-center gap-4">
-            <Link href="/" className="font-semibold tracking-tight">
-              🏨 <span className="text-accent">Threehouse</span> & <span className="text-accent">Barceló</span> Prices
+            <Link href="/" className="font-semibold tracking-tight text-ink">
+              Threehouse & Barceló Prices
             </Link>
             <nav className="flex gap-1 ml-4">
               {tabs.map((t) => (
