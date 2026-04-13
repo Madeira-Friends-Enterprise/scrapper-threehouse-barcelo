@@ -7,6 +7,7 @@ from calendar import monthrange
 from datetime import date, timedelta
 from typing import Any, Iterable
 
+from curl_cffi import requests as cffi
 from playwright.sync_api import BrowserContext
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
@@ -19,7 +20,6 @@ BRAND = "Barceló"
 AVAILABILITY_URL = (
     "https://reservation-api.barcelo.com/hotel-availability-adapter/v1/hotels/{id}/availability"
 )
-CSRF_META_NAMES = ["csrf-token", "_csrf", "X-CSRF-TOKEN"]
 
 
 class BarceloFetchError(RuntimeError):
@@ -33,34 +33,11 @@ def _month_windows(start: date, end: date) -> list[tuple[date, date]]:
         last = date(cur.year, cur.month, monthrange(cur.year, cur.month)[1])
         win_end = min(last, end)
         windows.append((cur, win_end))
-        # Jump to the first of next month
         if cur.month == 12:
             cur = date(cur.year + 1, 1, 1)
         else:
             cur = date(cur.year, cur.month + 1, 1)
     return windows
-
-
-def _extract_csrf(page) -> str | None:
-    for name in CSRF_META_NAMES:
-        try:
-            value = page.evaluate(
-                f"() => document.querySelector(\"meta[name='{name}']\")?.content"
-            )
-            if value:
-                return value
-        except Exception:
-            continue
-    try:
-        html = page.content()
-        m = re.search(r'"csrfToken"\s*:\s*"([^"]+)"', html) or re.search(
-            r'csrf_token["\']?\s*[:=]\s*["\']([^"\']+)', html
-        )
-        if m:
-            return m.group(1)
-    except Exception:
-        pass
-    return None
 
 
 def _iter_daily_prices(payload: Any) -> Iterable[tuple[date, float | None, bool]]:
@@ -105,8 +82,8 @@ def _iter_daily_prices(payload: Any) -> Iterable[tuple[date, float | None, bool]
     wait=wait_exponential(multiplier=1.5, min=2, max=15),
     retry=retry_if_exception_type(BarceloFetchError),
 )
-def _fetch_window(
-    page, hotel: BarceloHotel, check_in: date, check_out: date, csrf: str | None
+def _fetch_window_cffi(
+    hotel: BarceloHotel, check_in: date, check_out: date
 ) -> list[tuple[date, float | None, bool]]:
     body = {
         "checkIn": check_in.isoformat(),
@@ -122,60 +99,50 @@ def _fetch_window(
         "Accept": "application/json",
         "Origin": "https://www.barcelo.com",
         "Referer": hotel.page_url,
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/130.0.0.0 Safari/537.36"
+        ),
     }
-    if csrf:
-        headers["X-CSRF-Token"] = csrf
-        headers["X-XSRF-TOKEN"] = csrf
-
     url = AVAILABILITY_URL.format(id=hotel.hotel_id)
-    try:
-        resp = page.request.post(url, data=json.dumps(body), headers=headers)
-    except Exception as exc:
-        raise BarceloFetchError(f"network error: {exc}") from exc
+    last_error: str | None = None
+    for impersonate in ("chrome124", "chrome120"):
+        try:
+            r = cffi.post(url, json=body, headers=headers, impersonate=impersonate, timeout=30)
+        except Exception as exc:
+            last_error = f"network/{impersonate}: {exc}"
+            continue
 
-    if resp.status >= 500 or resp.status == 403:
-        raise BarceloFetchError(f"status {resp.status} for {hotel.slug} {check_in}..{check_out}")
-    if not resp.ok:
-        log.debug("barcelo %s %s..%s -> %s", hotel.slug, check_in, check_out, resp.status)
-        return []
+        if r.status_code >= 500 or r.status_code == 403:
+            last_error = f"status {r.status_code} ({impersonate})"
+            continue
+        if not r.ok:
+            log.debug("barcelo %s %s..%s -> %s", hotel.slug, check_in, check_out, r.status_code)
+            return []
+        try:
+            data = r.json()
+        except Exception:
+            return []
+        return list(_iter_daily_prices(data))
 
-    try:
-        data = resp.json()
-    except Exception:
-        return []
-
-    return list(_iter_daily_prices(data))
+    raise BarceloFetchError(last_error or "exhausted impersonations")
 
 
 def scrape_barcelo_hotel(ctx: BrowserContext, hotel: BarceloHotel, end_date: date) -> list[PriceRow]:
-    page = ctx.new_page()
-    try:
-        page.goto(hotel.page_url, wait_until="domcontentloaded")
-        page.wait_for_timeout(1500)
-    except Exception as exc:
-        log.warning("barcelo %s: could not open hotel page (%s)", hotel.slug, exc)
-        page.close()
-        return []
-
-    csrf = _extract_csrf(page)
-    if not csrf:
-        log.debug("barcelo %s: no CSRF token found (API may still accept cookies only)", hotel.slug)
-
     today = date.today()
     captured: dict[date, tuple[float | None, bool]] = {}
+
     for win_start, win_end in _month_windows(today, end_date):
-        # API wants checkOut = next day for single-night or end-of-window exclusive.
         check_out = win_end + timedelta(days=1)
         try:
-            rows = _fetch_window(page, hotel, win_start, check_out, csrf)
+            rows = _fetch_window_cffi(hotel, win_start, check_out)
         except BarceloFetchError as exc:
             log.warning("barcelo %s %s..%s failed: %s", hotel.slug, win_start, win_end, exc)
             continue
         for d, price, avail in rows:
             if win_start <= d <= win_end:
                 captured.setdefault(d, (price, avail))
-
-    page.close()
 
     out: list[PriceRow] = []
     d = today
