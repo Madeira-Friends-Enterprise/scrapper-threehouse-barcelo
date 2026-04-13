@@ -40,12 +40,13 @@ jobs:
           HEADLESS: "true"
         run: python -m src.main -v
 
-      - name: Upload logs on failure
-        if: failure()
+      - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: scraper-logs
+          name: scraper-debug
           path: |
             *.log
+            *.html
             barcelo_hotels.json
           if-no-files-found: ignore
