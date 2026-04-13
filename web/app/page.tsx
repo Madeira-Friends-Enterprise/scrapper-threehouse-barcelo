@@ -3,6 +3,7 @@ import { Stats } from "@/components/Stats";
 import { PriceTable } from "@/components/HotelFilter";
 import { EmptyState } from "@/components/EmptyState";
 
+export const dynamic = "force-dynamic";
 export const revalidate = 300;
 
 export default async function HomePage() {

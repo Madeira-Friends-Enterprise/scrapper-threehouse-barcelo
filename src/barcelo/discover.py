@@ -12,20 +12,22 @@ from playwright.sync_api import BrowserContext
 
 log = logging.getLogger(__name__)
 
-# Barceló's Portugal country page. If it moves we fall back to the global
-# search endpoint with a country filter.
-PT_LANDING_URLS = [
-    "https://www.barcelo.com/pt-pt/hoteis/europa/portugal/",
-    "https://www.barcelo.com/pt-pt/hotels/europa/portugal/",
-    "https://www.barcelo.com/pt-pt/hoteles/europa/portugal/",
-]
+# Only target hotel: Barceló Funchal Oldtown.
+TARGET_SLUG = "barcelo-funchal-oldtown"
+TARGET_NAME = "Barceló Funchal Oldtown"
+TARGET_CITY = "Funchal"
 
 HOTEL_PAGE = "https://www.barcelo.com/pt-pt/{slug}/"
 CACHE_TTL_SECONDS = 7 * 24 * 3600
 
-UTAG_HOTEL_ID_RE = re.compile(r'"hotel_id"\s*:\s*"?(\d+)"?')
-UTAG_CITY_RE = re.compile(r'"hotel_city"\s*:\s*"([^"]+)"')
-UTAG_NAME_RE = re.compile(r'"hotel_name"\s*:\s*"([^"]+)"')
+ID_PATTERNS = [
+    re.compile(r'"hotel_id"\s*:\s*"?(\d+)"?'),
+    re.compile(r'"hotelId"\s*:\s*"?(\d+)"?'),
+    re.compile(r'data-hotel-id="(\d+)"'),
+    re.compile(r'hotelId=(\d+)'),
+    re.compile(r'/hotels/(\d+)/availability'),
+    re.compile(r'"id"\s*:\s*"(\d{5,8})"'),
+]
 
 
 @dataclass
@@ -61,100 +63,73 @@ def _save_cache(path: Path, hotels: Iterable[BarceloHotel]) -> None:
     )
 
 
-def _extract_slugs(html: str) -> list[str]:
-    """Pull hotel slugs from anchor hrefs on the Portugal landing page."""
-    slugs = set()
-    for m in re.finditer(r'href="(?:https://www\.barcelo\.com)?/pt-pt/([a-z0-9][a-z0-9-]+)/"', html):
-        slug = m.group(1)
-        # Filter out navigation / category slugs
-        if slug in {"hoteis", "hotels", "hoteles", "europa", "portugal", "ofertas",
-                    "experiencias", "my-barcelo", "barcelo-hotel-group", "destinos"}:
-            continue
-        if "-" not in slug:
-            continue
-        slugs.add(slug)
-    return sorted(slugs)
-
-
-def _extract_utag(html: str) -> tuple[str | None, str | None, str | None]:
-    hotel_id = UTAG_HOTEL_ID_RE.search(html)
-    city = UTAG_CITY_RE.search(html)
-    name = UTAG_NAME_RE.search(html)
-    return (
-        hotel_id.group(1) if hotel_id else None,
-        city.group(1) if city else None,
-        name.group(1) if name else None,
-    )
+def _extract_hotel_id(html: str) -> str | None:
+    for pat in ID_PATTERNS:
+        m = pat.search(html)
+        if m:
+            return m.group(1)
+    return None
 
 
 def discover_barcelo_portugal(ctx: BrowserContext, cache_path: Path, force: bool = False) -> list[BarceloHotel]:
+    """Discover the single target hotel (Barceló Funchal Oldtown)."""
     if not force:
         cached = _load_cache(cache_path)
         if cached:
-            log.info("barcelo: using cached hotel list (%d entries)", len(cached))
+            log.info("barcelo: using cached hotel (%s)", cached[0].slug)
             return cached
 
     page = ctx.new_page()
-    html = ""
-    for url in PT_LANDING_URLS:
+    url = HOTEL_PAGE.format(slug=TARGET_SLUG)
+    log.info("barcelo: opening %s", url)
+
+    hotel_id: str | None = None
+
+    # Capture network responses — the availability API URL contains the hotel_id.
+    def on_response(resp):
+        nonlocal hotel_id
+        if hotel_id:
+            return
+        m = re.search(r'/hotels/(\d+)/availability', resp.url)
+        if m:
+            hotel_id = m.group(1)
+            log.info("barcelo: hotel_id from network = %s", hotel_id)
+
+    page.on("response", on_response)
+
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(3000)
         try:
-            resp = page.goto(url, wait_until="domcontentloaded")
-            if resp and resp.ok:
-                page.wait_for_timeout(1500)
-                html = page.content()
-                log.info("barcelo: landing page OK at %s", url)
-                break
-        except Exception as exc:
-            log.debug("barcelo: landing %s failed: %s", url, exc)
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+    except Exception as exc:
+        log.warning("barcelo: page load issue (%s), continuing with what we have", exc)
 
-    slugs: list[str] = []
-    if html:
-        slugs = _extract_slugs(html)
-
-    # Safety net: if the landing page failed or yielded nothing, seed with
-    # hotels known to exist in Portugal so the scraper still produces output.
-    fallback_slugs = [
-        "barcelo-aguamarina",
-        "occidental-lisboa-marques-de-pombal",
-        "occidental-praia-de-oura",
-        "occidental-praia-da-luz",
-        "occidental-lisboa-5th-avenue",
-    ]
-    if not slugs:
-        log.warning("barcelo: no slugs parsed from landing, using fallback list")
-        slugs = fallback_slugs
-    else:
-        slugs = sorted(set(slugs) | set(fallback_slugs))
-
-    hotels: list[BarceloHotel] = []
-    for slug in slugs:
-        url = HOTEL_PAGE.format(slug=slug)
+    if not hotel_id:
         try:
-            resp = page.goto(url, wait_until="domcontentloaded")
+            html = page.content()
+            if "Access Denied" in html[:500]:
+                log.error("barcelo: Akamai blocked the request (Access Denied)")
+            hotel_id = _extract_hotel_id(html)
+            if hotel_id:
+                log.info("barcelo: hotel_id from HTML = %s", hotel_id)
         except Exception as exc:
-            log.debug("barcelo: %s unreachable (%s)", slug, exc)
-            continue
-        if not resp or not resp.ok:
-            continue
-        page.wait_for_timeout(600)
-        body = page.content()
-        hotel_id, city, name = _extract_utag(body)
-        if not hotel_id:
-            continue
-        # Keep only Portugal hotels. utag exposes hotel_country in many deployments.
-        country_match = re.search(r'"hotel_country"\s*:\s*"([^"]+)"', body)
-        if country_match and "portugal" not in country_match.group(1).lower():
-            continue
-        hotels.append(
-            BarceloHotel(
-                slug=slug,
-                name=name or slug.replace("-", " ").title(),
-                city=city or "",
-                hotel_id=hotel_id,
-            )
-        )
+            log.warning("barcelo: could not read content (%s)", exc)
 
     page.close()
-    _save_cache(cache_path, hotels)
-    log.info("barcelo: discovered %d Portugal hotels", len(hotels))
-    return hotels
+
+    if not hotel_id:
+        log.error("barcelo: could not discover hotel_id for %s", TARGET_SLUG)
+        return []
+
+    hotel = BarceloHotel(
+        slug=TARGET_SLUG,
+        name=TARGET_NAME,
+        city=TARGET_CITY,
+        hotel_id=hotel_id,
+    )
+    _save_cache(cache_path, [hotel])
+    log.info("barcelo: discovered 1 hotel (%s, id=%s)", hotel.slug, hotel.hotel_id)
+    return [hotel]
