@@ -24,11 +24,32 @@ export function RefreshButton() {
   const [status, setStatus] = useState<StatusResp | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [mounted, setMounted] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const startRef = useRef<number | null>(null);
 
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  async function cancel() {
+    if (!runId) return;
+    setCancelling(true);
+    try {
+      const res = await fetch(`/api/cancel-scrape?runId=${runId}`, { method: "POST" });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setError(j.error ?? `Cancel failed: HTTP ${res.status}`);
+        setPhase("error");
+      } else {
+        setPhase("idle");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setPhase("error");
+    } finally {
+      setCancelling(false);
+    }
+  }
 
   useEffect(() => {
     if (phase !== "running") return;
@@ -110,8 +131,28 @@ export function RefreshButton() {
     phase === "dispatching" || phase === "running" || phase === "done" || phase === "error";
 
   const overlay = (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="card max-w-md w-full bg-white shadow-2xl p-6 space-y-4 rounded-2xl">
+    <div
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        width: "100vw",
+        height: "100vh",
+        zIndex: 99999,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(0,0,0,0.55)",
+        backdropFilter: "blur(4px)",
+        padding: "1rem",
+      }}
+    >
+      <div
+        className="bg-white shadow-2xl p-6 space-y-4 rounded-2xl"
+        style={{ maxWidth: "28rem", width: "100%" }}
+      >
         {phase === "dispatching" && (
           <>
             <div className="flex items-center gap-3">
@@ -142,11 +183,19 @@ export function RefreshButton() {
                 Elapsed: {fmtDuration(elapsed)}
                 {status?.runNumber ? ` · run #${status.runNumber}` : ""}
               </span>
-              <span>Typical: 2–4 min</span>
             </div>
             <p className="text-xs text-ink/50">
-              The overlay closes automatically when new prices are saved to Google Sheets.
+              Closes automatically when new prices are saved to Google Sheets.
             </p>
+            <div className="flex justify-end">
+              <button
+                className="btn btn-ghost text-xs"
+                onClick={cancel}
+                disabled={cancelling}
+              >
+                {cancelling ? "Cancelling…" : "Cancel run"}
+              </button>
+            </div>
           </>
         )}
 

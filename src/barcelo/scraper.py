@@ -126,8 +126,8 @@ def _log_schema_sample(data: Any) -> None:
 
 @retry(
     reraise=True,
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1.5, min=2, max=15),
+    stop=stop_after_attempt(2),
+    wait=wait_exponential(multiplier=1.5, min=1, max=5),
     retry=retry_if_exception_type(BarceloFetchError),
 )
 def _fetch_window_playwright(
@@ -224,12 +224,25 @@ def scrape_barcelo_hotel(ctx: BrowserContext, hotel: BarceloHotel, end_date: dat
     except Exception as exc:
         log.warning("barcelo: warmup nav failed (%s)", exc)
 
+    consecutive_failures = 0
     for win_start, win_end in _month_windows(today, end_date):
         check_out = win_end + timedelta(days=1)
         try:
             rows = _fetch_window_playwright(page, hotel, win_start, check_out)
+            consecutive_failures = 0
         except BarceloFetchError as exc:
-            log.warning("barcelo %s %s..%s failed: %s", hotel.slug, win_start, win_end, exc)
+            consecutive_failures += 1
+            log.warning(
+                "barcelo %s %s..%s failed (%d consecutive): %s",
+                hotel.slug, win_start, win_end, consecutive_failures, exc,
+            )
+            if consecutive_failures >= 2:
+                log.error(
+                    "barcelo: circuit-breaker open after %d consecutive failures, "
+                    "abandoning remaining windows",
+                    consecutive_failures,
+                )
+                break
             continue
         for d, price, avail in rows:
             if win_start <= d <= win_end:
