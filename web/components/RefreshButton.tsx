@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 
 type Phase = "idle" | "dispatching" | "running" | "done" | "error";
@@ -22,7 +23,12 @@ export function RefreshButton() {
   const [runId, setRunId] = useState<number | null>(null);
   const [status, setStatus] = useState<StatusResp | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [mounted, setMounted] = useState(false);
   const startRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     if (phase !== "running") return;
@@ -100,6 +106,80 @@ export function RefreshButton() {
   }
 
   const active = phase === "dispatching" || phase === "running";
+  const overlayVisible =
+    phase === "dispatching" || phase === "running" || phase === "done" || phase === "error";
+
+  const overlay = (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+      <div className="card max-w-md w-full bg-white shadow-2xl p-6 space-y-4 rounded-2xl">
+        {phase === "dispatching" && (
+          <>
+            <div className="flex items-center gap-3">
+              <Spinner />
+              <div className="font-semibold">Triggering scraper…</div>
+            </div>
+            <p className="text-sm text-ink/60">
+              Dispatching GitHub Actions workflow. This usually takes a couple of seconds.
+            </p>
+          </>
+        )}
+
+        {phase === "running" && (
+          <>
+            <div className="flex items-center gap-3">
+              <Spinner />
+              <div className="font-semibold">Scraping Threehouse + Barceló…</div>
+            </div>
+            <div className="text-sm text-ink/70">
+              {status?.currentStep ?? "Starting…"}
+            </div>
+            <Progress
+              completed={status?.progress.completed ?? 0}
+              total={status?.progress.total ?? 1}
+            />
+            <div className="flex justify-between text-xs text-ink/50">
+              <span>
+                Elapsed: {fmtDuration(elapsed)}
+                {status?.runNumber ? ` · run #${status.runNumber}` : ""}
+              </span>
+              <span>Typical: 2–4 min</span>
+            </div>
+            <p className="text-xs text-ink/50">
+              The overlay closes automatically when new prices are saved to Google Sheets.
+            </p>
+          </>
+        )}
+
+        {phase === "done" && (
+          <>
+            <div className="flex items-center gap-3">
+              <div className="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center text-sm">✓</div>
+              <div className="font-semibold">Scrape complete</div>
+            </div>
+            <p className="text-sm text-ink/60">Refreshing data…</p>
+          </>
+        )}
+
+        {phase === "error" && (
+          <>
+            <div className="flex items-center gap-3">
+              <div className="w-6 h-6 rounded-full bg-rose-500 text-white flex items-center justify-center text-sm">!</div>
+              <div className="font-semibold">Scrape failed</div>
+            </div>
+            <p className="text-sm text-rose-700 break-words whitespace-pre-wrap">{error}</p>
+            <div className="flex gap-2 justify-end">
+              <button className="btn btn-ghost" onClick={() => setPhase("idle")}>
+                Close
+              </button>
+              <button className="btn btn-primary" onClick={start}>
+                Retry
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <>
@@ -112,77 +192,7 @@ export function RefreshButton() {
         </button>
       </div>
 
-      {(phase === "dispatching" || phase === "running" || phase === "done" || phase === "error") && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="card max-w-md w-[92%] bg-white shadow-2xl p-6 space-y-4">
-            {phase === "dispatching" && (
-              <>
-                <div className="flex items-center gap-3">
-                  <Spinner />
-                  <div className="font-semibold">Triggering scraper…</div>
-                </div>
-                <p className="text-sm text-ink/60">
-                  Dispatching GitHub Actions workflow. This usually takes a couple of seconds.
-                </p>
-              </>
-            )}
-
-            {phase === "running" && (
-              <>
-                <div className="flex items-center gap-3">
-                  <Spinner />
-                  <div className="font-semibold">Scraping Threehouse + Barceló…</div>
-                </div>
-                <div className="text-sm text-ink/70">
-                  {status?.currentStep ?? "Starting…"}
-                </div>
-                <Progress
-                  completed={status?.progress.completed ?? 0}
-                  total={status?.progress.total ?? 1}
-                />
-                <div className="flex justify-between text-xs text-ink/50">
-                  <span>
-                    Elapsed: {fmtDuration(elapsed)}
-                    {status?.runNumber ? ` · run #${status.runNumber}` : ""}
-                  </span>
-                  <span>Typical: 2–4 min</span>
-                </div>
-                <p className="text-xs text-ink/50">
-                  The overlay closes automatically when new prices are saved to Google Sheets.
-                </p>
-              </>
-            )}
-
-            {phase === "done" && (
-              <>
-                <div className="flex items-center gap-3">
-                  <div className="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center text-sm">✓</div>
-                  <div className="font-semibold">Scrape complete</div>
-                </div>
-                <p className="text-sm text-ink/60">Refreshing data…</p>
-              </>
-            )}
-
-            {phase === "error" && (
-              <>
-                <div className="flex items-center gap-3">
-                  <div className="w-6 h-6 rounded-full bg-rose-500 text-white flex items-center justify-center text-sm">!</div>
-                  <div className="font-semibold">Scrape failed</div>
-                </div>
-                <p className="text-sm text-rose-700 break-words">{error}</p>
-                <div className="flex gap-2 justify-end">
-                  <button className="btn btn-ghost" onClick={() => setPhase("idle")}>
-                    Close
-                  </button>
-                  <button className="btn btn-primary" onClick={start}>
-                    Retry
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
+      {mounted && overlayVisible && createPortal(overlay, document.body)}
     </>
   );
 }

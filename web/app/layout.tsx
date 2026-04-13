@@ -38,7 +38,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </header>
         <main className="mx-auto max-w-7xl px-4 py-6">{children}</main>
         <footer className="mx-auto max-w-7xl px-4 py-8 text-xs text-ink/50">
-          Live AI scrape via OpenRouter. Cached to Google Sheets; auto-refresh every 4h.
+          Threehouse via Firecrawl, Barceló via availability API. Cached to Google Sheets — runs only on manual ⚡ Scrape now.
         </footer>
       </body>
     </html>
