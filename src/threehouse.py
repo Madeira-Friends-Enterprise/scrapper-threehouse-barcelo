@@ -31,21 +31,18 @@ MONTH_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 
-NEXT_MONTH_SELECTOR = (
-    "[data-twin='rates'] button[aria-label*='seguinte' i], "
-    "[data-twin='rates'] button[aria-label*='next' i], "
-    "[data-twin='rates'] button[aria-label*='pr\u00f3ximo' i], "
-    "[data-twin='rates'] [class*='next-month'], "
-    "[data-twin='rates'] .calendar-next, "
-    "[data-twin='rates'] button:has-text('\u203a'), "
-    "button[aria-label*='seguinte' i], "
-    "button[aria-label*='next' i]"
+# Price token: digits (with optional . or , as thousand/decimal separators) followed by a currency marker.
+# Accept €, $, USD, EUR. Lowercase-insensitive.
+PRICE_TOKEN_RE = re.compile(
+    r"(\d{1,4}(?:[.,]\d{1,3})?)\s*(€|\$|EUR|USD)",
+    re.IGNORECASE,
 )
 
 
 def _parse_price(raw: str) -> float | None:
     raw = raw.strip()
     if "," in raw and "." in raw:
+        # European thousand format "1.234,56" → 1234.56
         raw = raw.replace(".", "").replace(",", ".")
     elif "," in raw:
         raw = raw.replace(",", ".")
@@ -55,9 +52,10 @@ def _parse_price(raw: str) -> float | None:
         return None
 
 
-def _parse_month_block(block: str, year: int, month: int) -> list[tuple[date, float | None]]:
+def _parse_month_block(block: str, year: int, month: int) -> list[tuple[date, float | None, str]]:
+    """Return list of (date, price-or-None, currency-or-empty)."""
     last_day = monthrange(year, month)[1]
-    out: list[tuple[date, float | None]] = []
+    out: list[tuple[date, float | None, str]] = []
     d = 1
     i = 0
     n = len(block)
@@ -68,14 +66,16 @@ def _parse_month_block(block: str, year: int, month: int) -> list[tuple[date, fl
             continue
         j = i + len(ds)
         if j < n and block[j] == "-":
-            out.append((date(year, month, d), None))
+            out.append((date(year, month, d), None, ""))
             d += 1
             i = j + 1
             continue
-        m = re.match(r"(\d{1,4}(?:[.,]\d{1,2})?)\s*€", block[j:])
+        m = PRICE_TOKEN_RE.match(block[j:])
         if m:
             price = _parse_price(m.group(1))
-            out.append((date(year, month, d), price))
+            sym = m.group(2).upper()
+            curr = "EUR" if sym in ("€", "EUR") else ("USD" if sym in ("$", "USD") else "")
+            out.append((date(year, month, d), price, curr))
             d += 1
             i = j + m.end()
             continue
@@ -83,14 +83,14 @@ def _parse_month_block(block: str, year: int, month: int) -> list[tuple[date, fl
     return out
 
 
-def parse_calendar_markdown(md: str) -> list[tuple[date, float | None]]:
+def parse_calendar_markdown(md: str) -> list[tuple[date, float | None, str]]:
+    """Parse all month blocks found in markdown, dedupe by date keeping the first priced hit."""
     matches = list(MONTH_HEADER_RE.finditer(md))
     if not matches:
         return []
-    out: list[tuple[date, float | None]] = []
+    by_date: dict[date, tuple[float | None, str]] = {}
     for idx, m in enumerate(matches):
         name = m.group(1).lower().replace("ç", "c")
-        # Normalise "março" variants
         month_num = MONTHS_PT.get(name) or MONTHS_PT.get(m.group(1).lower())
         if not month_num:
             continue
@@ -98,68 +98,79 @@ def parse_calendar_markdown(md: str) -> list[tuple[date, float | None]]:
         block_start = m.end()
         block_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(md)
         block = md[block_start:block_end]
-        # Cut the block at the first non-calendar marker (explanatory text).
         cutoff = re.search(r"Pre[çc]os aproximados|Quem\s*\d|Promo[çc][ãa]o|Pesquisar", block)
         if cutoff:
             block = block[: cutoff.start()]
-        out.extend(_parse_month_block(block, year, month_num))
-    return out
+        for d, price, curr in _parse_month_block(block, year, month_num):
+            prev = by_date.get(d)
+            # Prefer priced entry over None-entry so later widgets don't overwrite a price with None.
+            if prev is None or (prev[0] is None and price is not None):
+                by_date[d] = (price, curr)
+    return [(d, p, c) for d, (p, c) in sorted(by_date.items())]
 
 
-def _build_actions(click_count: int) -> list[dict[str, Any]]:
-    actions: list[dict[str, Any]] = [
-        {"type": "wait", "milliseconds": 3000},
-        {"type": "scroll", "direction": "down", "amount": 600},
-        {"type": "wait", "milliseconds": 1500},
-    ]
-    for _ in range(click_count):
-        actions.append({"type": "click", "selector": NEXT_MONTH_SELECTOR})
-        actions.append({"type": "wait", "milliseconds": 1200})
-    return actions
+def _checkin_url(d: date) -> str:
+    """The Mirai widget on www.threehouse.com navigates when given ?checkin=DD/MM/YYYY."""
+    return f"{SOURCE_URL}?checkin={d.day:02d}/{d.month:02d}/{d.year}"
+
+
+def _month_anchors(today: date, end_date: date) -> list[date]:
+    """One anchor per 2-month bucket. Each Firecrawl call renders anchor's month + next month."""
+    anchors: list[date] = [today]
+    cur = date(today.year, today.month, 1)
+    # Advance by 2 months at a time from the START of the next uncovered bucket.
+    while True:
+        # Jump 2 months ahead.
+        m = cur.month + 2
+        y = cur.year + (m - 1) // 12
+        m = ((m - 1) % 12) + 1
+        cur = date(y, m, 1)
+        if cur > end_date:
+            break
+        anchors.append(cur)
+    return anchors
 
 
 def scrape_threehouse(_ctx: BrowserContext | None, end_date: date) -> list[PriceRow]:
     today = date.today()
-    months_needed = (end_date.year - today.year) * 12 + (end_date.month - today.month) + 1
+    anchors = _month_anchors(today, end_date)
+    log.info("threehouse: %d firecrawl anchors across %s..%s", len(anchors), today, end_date)
 
-    captured: dict[date, float | None] = {}
+    captured: dict[date, tuple[float | None, str]] = {}
 
-    # Each Firecrawl call renders ~2 months. Advance by 2 months per call.
-    call_count = max(1, (months_needed + 1) // 2 + 1)
-    for call_idx in range(call_count):
-        actions = _build_actions(click_count=call_idx * 2)
+    for idx, anchor in enumerate(anchors):
+        url = _checkin_url(anchor)
         try:
             md = scrape_markdown(
-                SOURCE_URL,
-                actions=actions,
+                url,
+                actions=[{"type": "wait", "milliseconds": 4000}],
                 wait_for_ms=4000,
                 timeout_ms=60000,
             )
         except FirecrawlError as exc:
-            log.warning("threehouse: firecrawl call %d failed: %s", call_idx, exc)
+            log.warning("threehouse: firecrawl anchor %d (%s) failed: %s", idx, anchor, exc)
             continue
 
         entries = parse_calendar_markdown(md)
         new_count = 0
-        for d, price in entries:
-            if d in captured:
+        for d, price, curr in entries:
+            if not (today <= d <= end_date):
                 continue
-            if today <= d <= end_date:
-                captured[d] = price
+            prev = captured.get(d)
+            if prev is None:
+                captured[d] = (price, curr)
                 new_count += 1
+            elif prev[0] is None and price is not None:
+                captured[d] = (price, curr)
         log.info(
-            "threehouse: call %d advanced=%d months, parsed=%d entries, new=%d",
-            call_idx, call_idx * 2, len(entries), new_count,
+            "threehouse: anchor %d (%s) parsed=%d new=%d total=%d",
+            idx, anchor, len(entries), new_count, len(captured),
         )
-
-        max_captured = max(captured.keys(), default=today)
-        if max_captured >= end_date:
-            break
 
     rows: list[PriceRow] = []
     d = today
     while d <= end_date:
-        price = captured.get(d)
+        price, curr = captured.get(d, (None, ""))
         rows.append(
             PriceRow(
                 brand=BRAND,
@@ -168,6 +179,7 @@ def scrape_threehouse(_ctx: BrowserContext | None, end_date: date) -> list[Price
                 city=CITY,
                 date=d,
                 price=price,
+                currency=curr or "EUR",
                 available=price is not None,
                 source_url=SOURCE_URL,
             )
