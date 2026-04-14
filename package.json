@@ -1,0 +1,12 @@
+{
+  "name": "scrapper-threehouse-barcelo",
+  "private": true,
+  "description": "Root stub so Vercel detects Next.js. Real app lives in web/.",
+  "scripts": {
+    "build": "cd web && npm install && npm run build",
+    "start": "cd web && npm start"
+  },
+  "dependencies": {
+    "next": "14.2.15"
+  }
+}
