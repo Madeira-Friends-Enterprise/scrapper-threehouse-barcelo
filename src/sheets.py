@@ -35,22 +35,60 @@ def _worksheet_by_gid(spreadsheet: gspread.Spreadsheet, gid: int) -> gspread.Wor
     raise ValueError(f"Worksheet with gid={gid} not found in spreadsheet {spreadsheet.title}")
 
 
-def write_rows(
+def _ensure_header(ws: gspread.Worksheet) -> None:
+    """Make sure row 1 holds the canonical header.
+
+    If the stored header has the same column count we leave existing data
+    alone. If the schema shape has changed (new columns added), we wipe the
+    whole sheet so we don't interleave rows with different shapes — the sheet
+    is a historical log; the old shape is unreadable once mixed.
+    """
+    try:
+        existing = ws.row_values(1)
+    except Exception:
+        existing = []
+    if existing == HEADER:
+        return
+    if existing and len(existing) != len(HEADER):
+        log.warning(
+            "sheets: schema shape changed (%d -> %d columns), clearing '%s'",
+            len(existing), len(HEADER), ws.title,
+        )
+        ws.clear()
+    ws.update(range_name="A1", values=[HEADER], value_input_option="USER_ENTERED")
+    log.info("sheets: rewrote header row on '%s'", ws.title)
+
+
+def append_rows(
     service_account_path: Path,
     sheet_id: str,
     sheet_gid: int,
     rows: Iterable[PriceRow],
 ) -> int:
+    """Append rows to the sheet without clearing prior data. Keeps a full history."""
     rows_list = list(rows)
     if not rows_list:
-        raise ValueError("write_rows refuses empty rows list (would wipe the sheet)")
+        raise ValueError("append_rows refuses empty rows list")
 
     client = _client(service_account_path)
     sh = client.open_by_key(sheet_id)
     ws = _worksheet_by_gid(sh, sheet_gid)
 
-    values = [HEADER] + [r.to_row() for r in rows_list]
-    ws.clear()
-    ws.update(range_name="A1", values=values, value_input_option="USER_ENTERED")
-    log.info("sheets: wrote %d rows to '%s' (gid=%d)", len(values) - 1, ws.title, sheet_gid)
-    return len(values) - 1
+    _ensure_header(ws)
+
+    values = [r.to_row() for r in rows_list]
+    ws.append_rows(
+        values,
+        value_input_option="USER_ENTERED",
+        insert_data_option="INSERT_ROWS",
+    )
+    log.info(
+        "sheets: appended %d rows to '%s' (gid=%d)",
+        len(values), ws.title, sheet_gid,
+    )
+    return len(values)
+
+
+# Backwards-compat alias: legacy callers used write_rows to overwrite.
+# We now always append; the old "wipe sheet" behaviour is gone on purpose.
+write_rows = append_rows

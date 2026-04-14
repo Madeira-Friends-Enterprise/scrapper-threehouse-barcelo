@@ -13,6 +13,7 @@ type Props = {
 export function PriceTable({ rows, hotels }: Props) {
   const [brandFilter, setBrandFilter] = useState<string>("all");
   const [hotelFilter, setHotelFilter] = useState<string>("all");
+  const [roomFilter, setRoomFilter] = useState<string>("all");
   const [onlyAvailable, setOnlyAvailable] = useState(true);
 
   const brands = useMemo(() => Array.from(new Set(hotels.map((h) => h.brand))), [hotels]);
@@ -22,21 +23,36 @@ export function PriceTable({ rows, hotels }: Props) {
     [hotels, brandFilter],
   );
 
+  const availableRooms = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const r of rows) {
+      if (brandFilter !== "all" && r.brand !== brandFilter) continue;
+      if (hotelFilter !== "all" && hotelKey(r.brand, r.hotelId) !== hotelFilter) continue;
+      const key = r.roomType || "(aggregate)";
+      if (!seen.has(key)) seen.set(key, r.roomType);
+    }
+    return Array.from(seen.entries()).map(([key, label]) => ({ key, label: label || "All rooms (lowest)" }));
+  }, [rows, brandFilter, hotelFilter]);
+
   const filtered = useMemo(() => {
     return rows.filter((r) => {
       if (brandFilter !== "all" && r.brand !== brandFilter) return false;
       if (hotelFilter !== "all" && hotelKey(r.brand, r.hotelId) !== hotelFilter) return false;
+      if (roomFilter !== "all") {
+        const key = r.roomType || "(aggregate)";
+        if (key !== roomFilter) return false;
+      }
       if (onlyAvailable && !r.available) return false;
       return true;
     });
-  }, [rows, brandFilter, hotelFilter, onlyAvailable]);
+  }, [rows, brandFilter, hotelFilter, roomFilter, onlyAvailable]);
 
   const toCsv = () => {
-    const header = ["date", "brand", "hotel_name", "city", "price", "currency", "available"];
+    const header = ["date", "brand", "hotel_name", "room_type", "city", "price", "currency", "available"];
     const lines = [header.join(",")];
     for (const r of filtered) {
       lines.push(
-        [r.date, r.brand, `"${r.hotelName.replace(/"/g, "''")}"`, r.city, r.price ?? "", r.currency, r.available]
+        [r.date, r.brand, `"${r.hotelName.replace(/"/g, "''")}"`, `"${(r.roomType || "").replace(/"/g, "''")}"`, r.city, r.price ?? "", r.currency, r.available]
           .map(String)
           .join(","),
       );
@@ -77,12 +93,31 @@ export function PriceTable({ rows, hotels }: Props) {
           <select
             className="rounded-md border border-black/10 px-2 py-1 max-w-[280px]"
             value={hotelFilter}
-            onChange={(e) => setHotelFilter(e.target.value)}
+            onChange={(e) => {
+              setHotelFilter(e.target.value);
+              setRoomFilter("all");
+            }}
           >
             <option value="all">All</option>
             {filteredHotels.map((h) => (
               <option key={hotelKey(h.brand, h.hotelId)} value={hotelKey(h.brand, h.hotelId)}>
                 {h.hotelName} {h.city ? `· ${h.city}` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="text-sm">
+          <span className="mr-2 text-ink/60">Room</span>
+          <select
+            className="rounded-md border border-black/10 px-2 py-1 max-w-[280px]"
+            value={roomFilter}
+            onChange={(e) => setRoomFilter(e.target.value)}
+          >
+            <option value="all">All</option>
+            {availableRooms.map((r) => (
+              <option key={r.key} value={r.key}>
+                {r.label}
               </option>
             ))}
           </select>
@@ -112,6 +147,7 @@ export function PriceTable({ rows, hotels }: Props) {
               <Th>Date</Th>
               <Th>Brand</Th>
               <Th>Hotel</Th>
+              <Th>Room</Th>
               <Th>City</Th>
               <Th className="text-right">Price</Th>
               <Th>Avail.</Th>
@@ -131,7 +167,10 @@ export function PriceTable({ rows, hotels }: Props) {
                     {r.brand}
                   </span>
                 </Td>
-                <Td className="max-w-[260px] truncate">{r.hotelName}</Td>
+                <Td className="max-w-[220px] truncate">{r.hotelName}</Td>
+                <Td className="max-w-[220px] truncate text-xs text-ink/70">
+                  {r.roomType || <span className="text-ink/40">aggregate</span>}
+                </Td>
                 <Td>{r.city || "—"}</Td>
                 <Td className="text-right font-medium">{formatCurrency(r.price, r.currency)}</Td>
                 <Td>{r.available ? "✓" : "—"}</Td>

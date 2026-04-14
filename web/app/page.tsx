@@ -4,23 +4,23 @@ import { PriceTable } from "@/components/HotelFilter";
 import { EmptyState } from "@/components/EmptyState";
 
 export const dynamic = "force-dynamic";
-export const revalidate = 300;
+export const revalidate = 0;
 
 export default async function HomePage() {
   try {
-    const { rows, meta } = await getDataset();
-    if (rows.length === 0) {
+    const { latest, meta } = await getDataset();
+    if (latest.length === 0) {
       return (
         <EmptyState
           title="No data yet"
-          hint="Trigger the scraper with the ⚡ Scrape now button or wait for the next cron (every 4h)."
+          hint="Hit ⚡ Scrape now to trigger the GitHub Action. The overlay will close once prices are saved to Google Sheets."
         />
       );
     }
     return (
       <>
         <Stats meta={meta} />
-        <PriceTable rows={rows} hotels={meta.hotels} />
+        <PriceTable rows={latest} hotels={meta.hotels} />
       </>
     );
   } catch (err) {

@@ -4,16 +4,16 @@ import { Compare } from "@/components/Compare";
 import { EmptyState } from "@/components/EmptyState";
 
 export const dynamic = "force-dynamic";
-export const revalidate = 300;
+export const revalidate = 0;
 
 export default async function ComparePage() {
   try {
-    const { rows, meta } = await getDataset();
-    if (rows.length === 0) return <EmptyState title="No data yet" />;
+    const { latest, meta } = await getDataset();
+    if (latest.length === 0) return <EmptyState title="No data yet" />;
     return (
       <>
         <Stats meta={meta} />
-        <Compare rows={rows} hotels={meta.hotels} />
+        <Compare rows={latest} hotels={meta.hotels} />
       </>
     );
   } catch (err) {

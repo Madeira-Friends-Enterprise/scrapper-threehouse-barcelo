@@ -3,6 +3,8 @@ export type PriceRow = {
   brand: string;
   hotelName: string;
   hotelId: string;
+  roomType: string;
+  roomId: string;
   city: string;
   date: string;   // YYYY-MM-DD
   price: number | null;

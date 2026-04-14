@@ -48,7 +48,7 @@ export async function fetchRows(): Promise<PriceRow[]> {
   const sheets = google.sheets({ version: "v4", auth: getAuth() });
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${title}!A1:K100000`,
+    range: `${title}!A1:M100000`,
     valueRenderOption: "FORMATTED_VALUE",
   });
   const values = (res.data.values ?? []) as string[][];
@@ -62,6 +62,8 @@ export async function fetchRows(): Promise<PriceRow[]> {
     brand: idx("brand"),
     hotelName: idx("hotel_name"),
     hotelId: idx("hotel_id"),
+    roomType: idx("room_type"),
+    roomId: idx("room_id"),
     city: idx("city"),
     date: idx("date"),
     price: idx("price"),
@@ -78,6 +80,8 @@ export async function fetchRows(): Promise<PriceRow[]> {
     brand: pick(row, cols.brand),
     hotelName: pick(row, cols.hotelName),
     hotelId: pick(row, cols.hotelId),
+    roomType: pick(row, cols.roomType),
+    roomId: pick(row, cols.roomId),
     city: pick(row, cols.city),
     date: pick(row, cols.date).slice(0, 10),
     price: toNum(pick(row, cols.price)),
@@ -86,6 +90,17 @@ export async function fetchRows(): Promise<PriceRow[]> {
     minStay: toNum(pick(row, cols.minStay)) as number | null,
     sourceUrl: pick(row, cols.sourceUrl),
   }));
+}
+
+/** Dedup history rows to the latest snapshot per (brand, hotel, room, date). */
+export function latestOnly(rows: PriceRow[]): PriceRow[] {
+  const best = new Map<string, PriceRow>();
+  for (const r of rows) {
+    const k = `${r.brand}__${r.hotelId}__${r.roomId}__${r.date}`;
+    const prev = best.get(k);
+    if (!prev || r.scrapedAt > prev.scrapedAt) best.set(k, r);
+  }
+  return Array.from(best.values());
 }
 
 export function summarize(rows: PriceRow[]): DatasetMeta {

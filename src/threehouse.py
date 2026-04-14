@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 import re
 from calendar import monthrange
+from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any
 
 from playwright.sync_api import BrowserContext  # kept for signature compatibility
 
@@ -19,6 +19,32 @@ CITY = "Funchal"
 BRAND = "Threehouse"
 SOURCE_URL = "https://www.threehouse.com/"
 
+
+@dataclass(frozen=True)
+class Room:
+    room_id: str
+    room_type: str
+    slug: str
+
+    @property
+    def url(self) -> str:
+        return f"https://www.threehouse.com/estadia/{self.slug}/"
+
+
+# Hardcoded list of rooms — verified from https://www.threehouse.com/ markdown.
+# IDs are Mirai room IDs embedded in the slug.
+ROOMS: list[Room] = [
+    Room("85060", "Panorama Studio", "studio-85060"),
+    Room("85064", "Two-Bedroom Superior Apartment", "apartamento-t2-superior-85064"),
+    Room("85063", "Two-Bedroom Apartment", "apartamento-t2-85063"),
+    Room("85062", "One-Bedroom Superior Apartment", "apartamento-t1-superior-85062"),
+    Room("85061", "One-Bedroom Apartment", "apartamento-t1-85061"),
+]
+
+# Also scrape the hotel-level aggregate (min price across rooms) so the UI
+# can show a single headline price even when a visitor hasn't picked a room.
+AGGREGATE_ROOM = Room("", "All rooms (lowest)", "")
+
 MONTHS_PT: dict[str, int] = {
     "janeiro": 1, "fevereiro": 2, "março": 3, "marco": 3, "abril": 4,
     "maio": 5, "junho": 6, "julho": 7, "agosto": 8, "setembro": 9,
@@ -31,8 +57,6 @@ MONTH_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Price token: digits (with optional . or , as thousand/decimal separators) followed by a currency marker.
-# Accept €, $, USD, EUR. Lowercase-insensitive.
 PRICE_TOKEN_RE = re.compile(
     r"(\d{1,4}(?:[.,]\d{1,3})?)\s*(€|\$|EUR|USD)",
     re.IGNORECASE,
@@ -42,7 +66,6 @@ PRICE_TOKEN_RE = re.compile(
 def _parse_price(raw: str) -> float | None:
     raw = raw.strip()
     if "," in raw and "." in raw:
-        # European thousand format "1.234,56" → 1234.56
         raw = raw.replace(".", "").replace(",", ".")
     elif "," in raw:
         raw = raw.replace(",", ".")
@@ -53,7 +76,6 @@ def _parse_price(raw: str) -> float | None:
 
 
 def _parse_month_block(block: str, year: int, month: int) -> list[tuple[date, float | None, str]]:
-    """Return list of (date, price-or-None, currency-or-empty)."""
     last_day = monthrange(year, month)[1]
     out: list[tuple[date, float | None, str]] = []
     d = 1
@@ -84,7 +106,6 @@ def _parse_month_block(block: str, year: int, month: int) -> list[tuple[date, fl
 
 
 def parse_calendar_markdown(md: str) -> list[tuple[date, float | None, str]]:
-    """Parse all month blocks found in markdown, dedupe by date keeping the first priced hit."""
     matches = list(MONTH_HEADER_RE.finditer(md))
     if not matches:
         return []
@@ -98,29 +119,29 @@ def parse_calendar_markdown(md: str) -> list[tuple[date, float | None, str]]:
         block_start = m.end()
         block_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(md)
         block = md[block_start:block_end]
-        cutoff = re.search(r"Pre[çc]os aproximados|Quem\s*\d|Promo[çc][ãa]o|Pesquisar", block)
+        cutoff = re.search(
+            r"Pre[çc]os aproximados|Quem\s*\d|Promo[çc][ãa]o|Pesquisar|Entrada\s*[—-]\s*Sa[ií]da",
+            block,
+        )
         if cutoff:
             block = block[: cutoff.start()]
         for d, price, curr in _parse_month_block(block, year, month_num):
             prev = by_date.get(d)
-            # Prefer priced entry over None-entry so later widgets don't overwrite a price with None.
             if prev is None or (prev[0] is None and price is not None):
                 by_date[d] = (price, curr)
     return [(d, p, c) for d, (p, c) in sorted(by_date.items())]
 
 
-def _checkin_url(d: date) -> str:
-    """The Mirai widget on www.threehouse.com navigates when given ?checkin=DD/MM/YYYY."""
-    return f"{SOURCE_URL}?checkin={d.day:02d}/{d.month:02d}/{d.year}"
+def _checkin_url(base: str, d: date) -> str:
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}checkin={d.day:02d}/{d.month:02d}/{d.year}"
 
 
 def _month_anchors(today: date, end_date: date) -> list[date]:
-    """One anchor per 2-month bucket. Each Firecrawl call renders anchor's month + next month."""
+    """One anchor per 2-month bucket. Covers today..end_date with overlap tolerance."""
     anchors: list[date] = [today]
     cur = date(today.year, today.month, 1)
-    # Advance by 2 months at a time from the START of the next uncovered bucket.
     while True:
-        # Jump 2 months ahead.
         m = cur.month + 2
         y = cur.year + (m - 1) // 12
         m = ((m - 1) % 12) + 1
@@ -131,15 +152,12 @@ def _month_anchors(today: date, end_date: date) -> list[date]:
     return anchors
 
 
-def scrape_threehouse(_ctx: BrowserContext | None, end_date: date) -> list[PriceRow]:
-    today = date.today()
-    anchors = _month_anchors(today, end_date)
-    log.info("threehouse: %d firecrawl anchors across %s..%s", len(anchors), today, end_date)
-
+def _scrape_room_calendar(
+    room_url: str, anchors: list[date], today: date, end_date: date
+) -> dict[date, tuple[float | None, str]]:
     captured: dict[date, tuple[float | None, str]] = {}
-
     for idx, anchor in enumerate(anchors):
-        url = _checkin_url(anchor)
+        url = _checkin_url(room_url, anchor)
         try:
             md = scrape_markdown(
                 url,
@@ -148,9 +166,8 @@ def scrape_threehouse(_ctx: BrowserContext | None, end_date: date) -> list[Price
                 timeout_ms=60000,
             )
         except FirecrawlError as exc:
-            log.warning("threehouse: firecrawl anchor %d (%s) failed: %s", idx, anchor, exc)
+            log.warning("threehouse: anchor %d (%s) failed: %s", idx, anchor, exc)
             continue
-
         entries = parse_calendar_markdown(md)
         new_count = 0
         for d, price, curr in entries:
@@ -166,16 +183,32 @@ def scrape_threehouse(_ctx: BrowserContext | None, end_date: date) -> list[Price
             "threehouse: anchor %d (%s) parsed=%d new=%d total=%d",
             idx, anchor, len(entries), new_count, len(captured),
         )
+    return captured
 
-    rows: list[PriceRow] = []
+
+def scrape_threehouse(_ctx: BrowserContext | None, end_date: date) -> list[PriceRow]:
+    today = date.today()
+    anchors = _month_anchors(today, end_date)
+    log.info(
+        "threehouse: %d rooms × %d anchors = %d firecrawl calls",
+        len(ROOMS) + 1, len(anchors), (len(ROOMS) + 1) * len(anchors),
+    )
+
+    all_rows: list[PriceRow] = []
+
+    # 1) Hotel-level aggregate (main page, min price across rooms).
+    log.info("threehouse: aggregate (hotel-level)")
+    agg_captured = _scrape_room_calendar(SOURCE_URL, anchors, today, end_date)
     d = today
     while d <= end_date:
-        price, curr = captured.get(d, (None, ""))
-        rows.append(
+        price, curr = agg_captured.get(d, (None, ""))
+        all_rows.append(
             PriceRow(
                 brand=BRAND,
                 hotel_name=HOTEL_NAME,
                 hotel_id=HOTEL_ID,
+                room_type=AGGREGATE_ROOM.room_type,
+                room_id=AGGREGATE_ROOM.room_id,
                 city=CITY,
                 date=d,
                 price=price,
@@ -186,6 +219,30 @@ def scrape_threehouse(_ctx: BrowserContext | None, end_date: date) -> list[Price
         )
         d += timedelta(days=1)
 
-    with_price = sum(1 for r in rows if r.price is not None)
-    log.info("threehouse: %d rows (%d with price)", len(rows), with_price)
-    return rows
+    # 2) Per-room calendars.
+    for room in ROOMS:
+        log.info("threehouse: room %s (%s)", room.room_type, room.room_id)
+        room_captured = _scrape_room_calendar(room.url, anchors, today, end_date)
+        d = today
+        while d <= end_date:
+            price, curr = room_captured.get(d, (None, ""))
+            all_rows.append(
+                PriceRow(
+                    brand=BRAND,
+                    hotel_name=HOTEL_NAME,
+                    hotel_id=HOTEL_ID,
+                    room_type=room.room_type,
+                    room_id=room.room_id,
+                    city=CITY,
+                    date=d,
+                    price=price,
+                    currency=curr or "EUR",
+                    available=price is not None,
+                    source_url=room.url,
+                )
+            )
+            d += timedelta(days=1)
+
+    with_price = sum(1 for r in all_rows if r.price is not None)
+    log.info("threehouse: %d rows (%d with price)", len(all_rows), with_price)
+    return all_rows

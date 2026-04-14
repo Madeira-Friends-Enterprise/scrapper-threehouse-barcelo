@@ -4,16 +4,16 @@ import { MonthlyChart } from "@/components/MonthlyChart";
 import { EmptyState } from "@/components/EmptyState";
 
 export const dynamic = "force-dynamic";
-export const revalidate = 300;
+export const revalidate = 0;
 
 export default async function ChartPage() {
   try {
-    const { rows, meta } = await getDataset();
-    if (rows.length === 0) return <EmptyState title="No data yet" />;
+    const { latest, meta } = await getDataset();
+    if (latest.length === 0) return <EmptyState title="No data yet" />;
     return (
       <>
         <Stats meta={meta} />
-        <MonthlyChart rows={rows} hotels={meta.hotels} />
+        <MonthlyChart rows={latest} hotels={meta.hotels} />
       </>
     );
   } catch (err) {

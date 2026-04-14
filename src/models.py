@@ -9,6 +9,8 @@ HEADER = [
     "brand",
     "hotel_name",
     "hotel_id",
+    "room_type",
+    "room_id",
     "city",
     "date",
     "price",
@@ -27,6 +29,8 @@ class PriceRow:
     city: str
     date: date
     price: float | None
+    room_type: str = ""
+    room_id: str = ""
     currency: str = "EUR"
     available: bool = True
     min_stay: int | None = None
@@ -39,6 +43,8 @@ class PriceRow:
             self.brand,
             self.hotel_name,
             self.hotel_id,
+            self.room_type,
+            self.room_id,
             self.city,
             self.date.isoformat(),
             "" if self.price is None else f"{self.price:.2f}",

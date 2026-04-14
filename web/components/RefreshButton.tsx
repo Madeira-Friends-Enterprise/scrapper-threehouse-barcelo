@@ -234,10 +234,10 @@ export function RefreshButton() {
     <>
       <div className="flex items-center gap-2">
         <button className="btn btn-ghost" onClick={reload} disabled={pending || active}>
-          ↻ Reload
+          Reload
         </button>
         <button className="btn btn-primary" onClick={start} disabled={active}>
-          ⚡ Scrape now
+          Scrape now
         </button>
       </div>
 
