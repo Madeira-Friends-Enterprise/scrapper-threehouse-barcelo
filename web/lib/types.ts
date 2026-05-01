@@ -11,6 +11,7 @@ export type PriceRow = {
   currency: string;
   available: boolean;
   minStay: number | null;
+  stayNights: number | null;
   sourceUrl: string;
 };
 

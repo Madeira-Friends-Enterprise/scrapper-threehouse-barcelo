@@ -20,14 +20,14 @@ type Props = {
 };
 
 export function Compare({ rows, hotels }: Props) {
-  const threehouse = hotels.filter((h) => h.brand === "Threehouse");
-  const barcelo = hotels.filter((h) => h.brand === "Barceló");
-
+  // Free 2-hotel comparison across all brands (Threehouse / Barceló /
+  // Savoy / etc). The first two hotels alphabetically seed the dropdowns
+  // so the page renders something useful on first load.
   const [leftKey, setLeftKey] = useState<string>(
-    threehouse[0] ? hotelKey(threehouse[0].brand, threehouse[0].hotelId) : "",
+    hotels[0] ? hotelKey(hotels[0].brand, hotels[0].hotelId) : "",
   );
   const [rightKey, setRightKey] = useState<string>(
-    barcelo[0] ? hotelKey(barcelo[0].brand, barcelo[0].hotelId) : "",
+    hotels[1] ? hotelKey(hotels[1].brand, hotels[1].hotelId) : (hotels[0] ? hotelKey(hotels[0].brand, hotels[0].hotelId) : ""),
   );
 
   const mapFor = (key: string) => {
@@ -68,29 +68,29 @@ export function Compare({ rows, hotels }: Props) {
     <div className="space-y-4">
       <div className="card grid grid-cols-1 md:grid-cols-2 gap-3">
         <label className="text-sm">
-          <span className="mr-2 text-ink/60">Threehouse</span>
+          <span className="mr-2 text-ink/60">Hotel A</span>
           <select
             className="rounded-md border border-black/10 px-2 py-1 w-full"
             value={leftKey}
             onChange={(e) => setLeftKey(e.target.value)}
           >
-            {threehouse.map((h) => (
+            {hotels.map((h) => (
               <option key={hotelKey(h.brand, h.hotelId)} value={hotelKey(h.brand, h.hotelId)}>
-                {h.hotelName}
+                [{h.brand}] {h.hotelName}
               </option>
             ))}
           </select>
         </label>
         <label className="text-sm">
-          <span className="mr-2 text-ink/60">Barceló</span>
+          <span className="mr-2 text-ink/60">Hotel B</span>
           <select
             className="rounded-md border border-black/10 px-2 py-1 w-full"
             value={rightKey}
             onChange={(e) => setRightKey(e.target.value)}
           >
-            {barcelo.map((h) => (
+            {hotels.map((h) => (
               <option key={hotelKey(h.brand, h.hotelId)} value={hotelKey(h.brand, h.hotelId)}>
-                {h.hotelName} {h.city ? `· ${h.city}` : ""}
+                [{h.brand}] {h.hotelName} {h.city ? `· ${h.city}` : ""}
               </option>
             ))}
           </select>
@@ -98,10 +98,10 @@ export function Compare({ rows, hotels }: Props) {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <StatCard label={`Avg ${leftHotel?.hotelName ?? ""}`} value={formatCurrency(avgLeft)} tint="amber" />
-        <StatCard label={`Avg ${rightHotel?.hotelName ?? ""}`} value={formatCurrency(avgRight)} tint="blue" />
+        <StatCard label={`Avg ${leftHotel?.hotelName ?? "A"}`} value={formatCurrency(avgLeft)} tint="amber" />
+        <StatCard label={`Avg ${rightHotel?.hotelName ?? "B"}`} value={formatCurrency(avgRight)} tint="blue" />
         <StatCard
-          label="Avg difference (TH − Barceló)"
+          label="Avg difference (A − B)"
           value={diff == null ? "—" : `${diff >= 0 ? "+" : ""}${formatCurrency(diff)}`}
           tint={diff == null ? "neutral" : diff >= 0 ? "red" : "green"}
         />
@@ -122,7 +122,7 @@ export function Compare({ rows, hotels }: Props) {
               <Line
                 type="monotone"
                 dataKey="left"
-                name={leftHotel?.hotelName ?? "Threehouse"}
+                name={leftHotel?.hotelName ?? "A"}
                 stroke="#f59e0b"
                 strokeWidth={2}
                 dot={false}
@@ -131,7 +131,7 @@ export function Compare({ rows, hotels }: Props) {
               <Line
                 type="monotone"
                 dataKey="right"
-                name={rightHotel?.hotelName ?? "Barceló"}
+                name={rightHotel?.hotelName ?? "B"}
                 stroke="#3d5afe"
                 strokeWidth={2}
                 dot={false}

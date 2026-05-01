@@ -8,6 +8,7 @@ from collections import Counter
 
 from .barcelo.discover import discover_barcelo_portugal
 from .barcelo.scraper import scrape_all_barcelo
+from .booking.scraper import scrape_booking
 from .browser import playwright_context
 from .config import Settings
 from .models import PriceRow
@@ -37,8 +38,12 @@ def _summary(rows: list[PriceRow]) -> str:
 
 
 def cli() -> int:
-    parser = argparse.ArgumentParser(description="Threehouse + Barceló PT price scraper.")
-    parser.add_argument("--only", choices=["threehouse", "barcelo"], help="Limit to one brand")
+    parser = argparse.ArgumentParser(description="Threehouse + Barceló + Booking PT price scraper.")
+    parser.add_argument(
+        "--only",
+        choices=["threehouse", "barcelo", "booking"],
+        help="Limit to one source",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Scrape but don't write to Sheets")
     parser.add_argument("--rediscover", action="store_true", help="Force Barceló hotel rediscovery")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -67,6 +72,12 @@ def cli() -> int:
                     log.warning("barcelo: no hotels discovered, skipping")
             except Exception:
                 log.exception("barcelo scraper crashed")
+
+        if args.only in (None, "booking"):
+            try:
+                rows.extend(scrape_booking(ctx, settings.end_date))
+            except Exception:
+                log.exception("booking scraper crashed")
 
     log.info("done: %s", _summary(rows))
 

@@ -48,7 +48,7 @@ export async function fetchRows(): Promise<PriceRow[]> {
   const sheets = google.sheets({ version: "v4", auth: getAuth() });
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${title}!A1:M100000`,
+    range: `${title}!A1:N100000`,
     valueRenderOption: "FORMATTED_VALUE",
   });
   const values = (res.data.values ?? []) as string[][];
@@ -70,6 +70,7 @@ export async function fetchRows(): Promise<PriceRow[]> {
     currency: idx("currency"),
     available: idx("available"),
     minStay: idx("min_stay"),
+    stayNights: idx("stay_nights"),
     sourceUrl: idx("source_url"),
   };
 
@@ -88,15 +89,17 @@ export async function fetchRows(): Promise<PriceRow[]> {
     currency: pick(row, cols.currency) || "EUR",
     available: toBool(pick(row, cols.available)),
     minStay: toNum(pick(row, cols.minStay)) as number | null,
+    stayNights: toNum(pick(row, cols.stayNights)) as number | null,
     sourceUrl: pick(row, cols.sourceUrl),
   }));
 }
 
-/** Dedup history rows to the latest snapshot per (brand, hotel, room, date). */
+/** Dedup history rows to the latest snapshot per (brand, hotel, room, stay-length, date). */
 export function latestOnly(rows: PriceRow[]): PriceRow[] {
   const best = new Map<string, PriceRow>();
   for (const r of rows) {
-    const k = `${r.brand}__${r.hotelId}__${r.roomId}__${r.date}`;
+    const stayKey = r.stayNights == null ? "none" : String(r.stayNights);
+    const k = `${r.brand}__${r.hotelId}__${r.roomId}__${stayKey}__${r.date}`;
     const prev = best.get(k);
     if (!prev || r.scrapedAt > prev.scrapedAt) best.set(k, r);
   }

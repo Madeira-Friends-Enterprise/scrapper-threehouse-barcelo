@@ -14,6 +14,7 @@ export function PriceTable({ rows, hotels }: Props) {
   const [brandFilter, setBrandFilter] = useState<string>("all");
   const [hotelFilter, setHotelFilter] = useState<string>("all");
   const [roomFilter, setRoomFilter] = useState<string>("all");
+  const [stayFilter, setStayFilter] = useState<string>("all");
   const [onlyAvailable, setOnlyAvailable] = useState(true);
 
   const brands = useMemo(() => Array.from(new Set(hotels.map((h) => h.brand))), [hotels]);
@@ -34,6 +35,9 @@ export function PriceTable({ rows, hotels }: Props) {
     return Array.from(seen.entries()).map(([key, label]) => ({ key, label: label || "All rooms (lowest)" }));
   }, [rows, brandFilter, hotelFilter]);
 
+  const stayLabel = (n: number | null) =>
+    n == null ? "Per night" : `${n} night${n > 1 ? "s" : ""}`;
+
   const filtered = useMemo(() => {
     return rows.filter((r) => {
       if (brandFilter !== "all" && r.brand !== brandFilter) return false;
@@ -42,17 +46,21 @@ export function PriceTable({ rows, hotels }: Props) {
         const key = r.roomType || "(aggregate)";
         if (key !== roomFilter) return false;
       }
+      if (stayFilter !== "all") {
+        const key = r.stayNights == null ? "none" : String(r.stayNights);
+        if (key !== stayFilter) return false;
+      }
       if (onlyAvailable && !r.available) return false;
       return true;
     });
-  }, [rows, brandFilter, hotelFilter, roomFilter, onlyAvailable]);
+  }, [rows, brandFilter, hotelFilter, roomFilter, stayFilter, onlyAvailable]);
 
   const toCsv = () => {
-    const header = ["date", "brand", "hotel_name", "room_type", "city", "price", "currency", "available"];
+    const header = ["date", "brand", "hotel_name", "room_type", "stay_nights", "city", "price", "currency", "available"];
     const lines = [header.join(",")];
     for (const r of filtered) {
       lines.push(
-        [r.date, r.brand, `"${r.hotelName.replace(/"/g, "''")}"`, `"${(r.roomType || "").replace(/"/g, "''")}"`, r.city, r.price ?? "", r.currency, r.available]
+        [r.date, r.brand, `"${r.hotelName.replace(/"/g, "''")}"`, `"${(r.roomType || "").replace(/"/g, "''")}"`, r.stayNights ?? "", r.city, r.price ?? "", r.currency, r.available]
           .map(String)
           .join(","),
       );
@@ -123,6 +131,21 @@ export function PriceTable({ rows, hotels }: Props) {
           </select>
         </label>
 
+        <label className="text-sm">
+          <span className="mr-2 text-ink/60">Stay</span>
+          <select
+            className="rounded-md border border-black/10 px-2 py-1"
+            value={stayFilter}
+            onChange={(e) => setStayFilter(e.target.value)}
+          >
+            <option value="all">All</option>
+            <option value="none">Per-night calendar</option>
+            <option value="1">1 night</option>
+            <option value="2">2 nights</option>
+            <option value="3">3 nights (normal)</option>
+          </select>
+        </label>
+
         <label className="text-sm inline-flex items-center gap-2">
           <input
             type="checkbox"
@@ -148,6 +171,7 @@ export function PriceTable({ rows, hotels }: Props) {
               <Th>Brand</Th>
               <Th>Hotel</Th>
               <Th>Room</Th>
+              <Th>Stay</Th>
               <Th>City</Th>
               <Th className="text-right">Price</Th>
               <Th>Avail.</Th>
@@ -161,7 +185,13 @@ export function PriceTable({ rows, hotels }: Props) {
                   <span
                     className={clsx(
                       "inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold",
-                      r.brand === "Threehouse" ? "bg-amber-100 text-amber-800" : "bg-blue-100 text-blue-800",
+                      r.brand === "Threehouse"
+                        ? "bg-amber-100 text-amber-800"
+                        : r.brand === "Barceló"
+                          ? "bg-blue-100 text-blue-800"
+                          : r.brand.startsWith("Savoy")
+                            ? "bg-rose-100 text-rose-800"
+                            : "bg-slate-100 text-slate-800",
                     )}
                   >
                     {r.brand}
@@ -171,6 +201,7 @@ export function PriceTable({ rows, hotels }: Props) {
                 <Td className="max-w-[220px] truncate text-xs text-ink/70">
                   {r.roomType || <span className="text-ink/40">aggregate</span>}
                 </Td>
+                <Td className="text-xs text-ink/70">{stayLabel(r.stayNights)}</Td>
                 <Td>{r.city || "—"}</Td>
                 <Td className="text-right font-medium">{formatCurrency(r.price, r.currency)}</Td>
                 <Td>{r.available ? "✓" : "—"}</Td>

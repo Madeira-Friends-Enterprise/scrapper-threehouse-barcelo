@@ -17,6 +17,7 @@ HEADER = [
     "currency",
     "available",
     "min_stay",
+    "stay_nights",
     "source_url",
 ]
 
@@ -34,6 +35,7 @@ class PriceRow:
     currency: str = "EUR"
     available: bool = True
     min_stay: int | None = None
+    stay_nights: int | None = None
     source_url: str = ""
     scraped_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -51,5 +53,6 @@ class PriceRow:
             self.currency,
             "TRUE" if self.available else "FALSE",
             "" if self.min_stay is None else self.min_stay,
+            "" if self.stay_nights is None else self.stay_nights,
             self.source_url,
         ]
