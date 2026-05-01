@@ -39,6 +39,34 @@ function toNum(v: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** Normalise the date cell to ISO "YYYY-MM-DD" regardless of how Sheets formatted it. */
+function toIsoDate(v: string): string {
+  if (!v) return "";
+  // ISO already.
+  const iso = v.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (iso) return iso[1];
+  // Excel/Sheets serial number (e.g. "46146" → 2026-05-04).
+  if (/^\d{4,6}$/.test(v)) {
+    const days = Number(v);
+    const epoch = Date.UTC(1899, 11, 30);
+    const dt = new Date(epoch + days * 86400_000);
+    if (!isNaN(dt.getTime())) {
+      const y = dt.getUTCFullYear();
+      const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(dt.getUTCDate()).padStart(2, "0");
+      return `${y}-${m}-${dd}`;
+    }
+  }
+  // DD/MM/YYYY locale string (Sheets en-GB default).
+  const ddmmyyyy = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (ddmmyyyy) {
+    const d = ddmmyyyy[1].padStart(2, "0");
+    const m = ddmmyyyy[2].padStart(2, "0");
+    return `${ddmmyyyy[3]}-${m}-${d}`;
+  }
+  return v.slice(0, 10);
+}
+
 export async function fetchRows(): Promise<PriceRow[]> {
   const spreadsheetId = process.env.GOOGLE_SHEET_ID;
   const gid = Number(process.env.GOOGLE_SHEET_GID ?? "0");
@@ -84,7 +112,7 @@ export async function fetchRows(): Promise<PriceRow[]> {
     roomType: pick(row, cols.roomType),
     roomId: pick(row, cols.roomId),
     city: pick(row, cols.city),
-    date: pick(row, cols.date).slice(0, 10),
+    date: toIsoDate(pick(row, cols.date)),
     price: toNum(pick(row, cols.price)),
     currency: pick(row, cols.currency) || "EUR",
     available: toBool(pick(row, cols.available)),

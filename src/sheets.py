@@ -77,9 +77,13 @@ def append_rows(
     _ensure_header(ws)
 
     values = [r.to_row() for r in rows_list]
+    # RAW — keep date strings as plain text. USER_ENTERED makes Sheets
+    # auto-parse "2026-05-04" as a date and store the serial number 46146,
+    # which leaks through valueRenderOption=FORMATTED_VALUE depending on
+    # cell formatting and crashes the client-side formatter.
     ws.append_rows(
         values,
-        value_input_option="USER_ENTERED",
+        value_input_option="RAW",
         insert_data_option="INSERT_ROWS",
     )
     log.info(
