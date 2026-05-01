@@ -150,17 +150,34 @@ def _scrape_one(
     return price, True
 
 
+def _weekly_anchors(today: date, end_date: date) -> list[date]:
+    """Mondays from today through end_date — ~34 anchors over ~8 months.
+
+    Booking is metered (~15 s per Firecrawl render), so daily granularity
+    blows past the workflow's wall-clock budget; weekly Mondays give a
+    consistent, repeatable cadence and ~204 calls per run instead of ~1500.
+    """
+    anchors: list[date] = []
+    d = today
+    # Snap forward to the next Monday (or stay on today if it's already Monday).
+    if d.weekday() != 0:
+        d += timedelta(days=(7 - d.weekday()) % 7)
+    while d <= end_date:
+        anchors.append(d)
+        d += timedelta(days=7)
+    return anchors
+
+
 def _scrape_listing_stay(
     listing: BookingListing, today: date, end_date: date, nights: int
 ) -> list[PriceRow]:
     rows: list[PriceRow] = []
     consecutive_failures = 0
-    d = today
-    while d <= end_date:
+    for d in _weekly_anchors(today, end_date):
         # The latest possible check-in for an N-night stay ending in 2026 is
         # end_date - (N - 1). After that, the stay would spill into 2027.
         if d + timedelta(days=nights) > end_date + timedelta(days=1):
-            break
+            continue
         price, captured = _scrape_one(listing, d, nights)
         if not captured:
             consecutive_failures += 1
@@ -189,7 +206,6 @@ def _scrape_listing_stay(
             )
         )
         time.sleep(SCRAPE_THROTTLE_SECONDS)
-        d += timedelta(days=1)
     priced = sum(1 for r in rows if r.price is not None)
     log.info(
         "booking %s n=%d -> %d rows (%d priced)",
@@ -200,9 +216,11 @@ def _scrape_listing_stay(
 
 def scrape_booking(_ctx: BrowserContext | None, end_date: date) -> list[PriceRow]:
     today = date.today()
+    anchor_count = len(_weekly_anchors(today, end_date))
     log.info(
-        "booking: %d listings × %d stay-lengths × ~%d dates",
-        len(LISTINGS), len(STAY_NIGHTS), (end_date - today).days + 1,
+        "booking: %d listings × %d stay-lengths × %d weekly anchors = ~%d calls",
+        len(LISTINGS), len(STAY_NIGHTS), anchor_count,
+        len(LISTINGS) * len(STAY_NIGHTS) * anchor_count,
     )
     rows: list[PriceRow] = []
     for listing in LISTINGS:
