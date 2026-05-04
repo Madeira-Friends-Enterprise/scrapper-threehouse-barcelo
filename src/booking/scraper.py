@@ -13,14 +13,12 @@ from ..models import PriceRow
 
 log = logging.getLogger(__name__)
 
-# The three "análises" the client asked for. Booking does not surface a
-# teaser rate on the listing page without dates; longer stays (5+ nights)
-# routinely return "no availability" for these luxury apartments, leaving
-# the "normal" tier mostly null. (1, 2, 3) gives three distinct length-of-
-# stay snapshots with the highest hit-rate — 3 nights is the "longer than
-# a weekend, looks like a holiday" baseline that proxies for "normal" while
-# still being short enough that Booking will quote it.
-STAY_NIGHTS = (1, 2, 3)
+# Stay lengths Luis Calado asked us to track. Per-night rate varies
+# dramatically with length (Booking's "single-night premium" rules):
+# Savoy Monumentalis on 2026-09-01 quotes 3,737 €/night for 1 night,
+# 1,868 €/night for 2 nights, and 534 €/night for 7 nights — same
+# total stay price, very different per-night signal for the client.
+STAY_NIGHTS = (1, 2, 3, 7)
 
 # Booking shows a city-tax + VAT line that's NOT in the headline price; we
 # leave price as-shown ("excludes city tax / VAT not shown" depending on
@@ -29,16 +27,23 @@ STAY_NIGHTS = (1, 2, 3)
 BOOKING_BASE = "https://www.booking.com"
 SCRAPE_THROTTLE_SECONDS = 0.2  # gentle pacing between Booking calls
 
-# Headline-price patterns we accept, in priority order. They all match the
-# room-card "total for N nights" cell rendered on the listing page.
-HEADLINE_PATTERNS = [
-    # "**€ 3,359 for 1 night**" — bold callout near the top of the listing
-    re.compile(r"\*\*\s*€\s*([\d,.]+)\s*for\s+(\d+)\s+night", re.IGNORECASE),
-    # "€ 3,359<br>1 night" or "€ 3,359 1 night" inside the room table
-    re.compile(r"€\s*([\d,.]+)\s*(?:<br>|\s)\s*(\d+)\s+night", re.IGNORECASE),
-    # "(€ 3,359)" total-for-stay reservation summary
-    re.compile(r"\(\s*€\s*([\d,.]+)\s*\)\s*\|", re.IGNORECASE),
-]
+# Per-night rate inside a room card (the "€ X per night" line). Booking
+# applies its own length-of-stay rules: 1-night books often quote a much
+# higher per-night rate than 7-night books for the same dates, even when
+# the *total* stay price is identical. The client cares about that
+# per-night number, so that's what we record as `price`.
+PER_NIGHT_RE = re.compile(
+    r"€\s*([\d,.]+)\s*(?:<br>|\s)+per\s+night",
+    re.IGNORECASE,
+)
+
+# Headline pattern used as a sanity check that the page actually rendered
+# the requested stay length (and isn't being silently coerced to a
+# different one by Booking's minimum-stay rules).
+HEADLINE_RE = re.compile(
+    r"€\s*([\d,.]+)\s*(?:for\s+)?(?:<br>|\s)+(\d+)\s+night",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -95,21 +100,35 @@ def _parse_eur_amount(raw: str) -> float | None:
         return None
 
 
-def _extract_headline_price(md: str, expected_nights: int) -> float | None:
-    for pat in HEADLINE_PATTERNS[:2]:
-        for m in pat.finditer(md):
-            try:
-                if int(m.group(2)) != expected_nights:
-                    continue
-            except (ValueError, IndexError):
+def _extract_per_night_price(md: str, expected_nights: int) -> float | None:
+    """Return the cheapest "€ X per night" value, but only after confirming
+    the page's headline reports the same stay length we requested.
+
+    Without that guard, Booking's minimum-stay enforcement leaks: a request
+    for 1 night may render a 2-night card, and we'd silently record the
+    longer-stay per-night rate against the 1-night row.
+    """
+    for h in HEADLINE_RE.finditer(md):
+        try:
+            if int(h.group(2)) != expected_nights:
                 continue
-            price = _parse_eur_amount(m.group(1))
-            if price is not None:
-                return price
-    # Fallback: parenthesised total in summary table.
-    m = HEADLINE_PATTERNS[2].search(md)
-    if m:
-        return _parse_eur_amount(m.group(1))
+        except (ValueError, IndexError):
+            continue
+        # Found a card whose headline matches the requested stay length.
+        # The "€ X per night" line is the immediately preceding price token
+        # within ~200 chars before this headline (room cards render
+        # per-night → total → label in that order).
+        window_start = max(0, h.start() - 250)
+        window = md[window_start:h.start()]
+        per_night_matches = list(PER_NIGHT_RE.finditer(window))
+        if per_night_matches:
+            return _parse_eur_amount(per_night_matches[-1].group(1))
+        # Fallback: total / nights, if we can find the total and nights
+        # are non-zero. Less precise (drops cleaning fees / extras into
+        # the per-night) but better than nothing.
+        total = _parse_eur_amount(h.group(1))
+        if total is not None and expected_nights > 0:
+            return round(total / expected_nights, 2)
     return None
 
 
@@ -139,7 +158,7 @@ def _scrape_one(
     except FirecrawlError as exc:
         log.warning("booking %s %s n=%d failed: %s", listing.hotel_id, checkin, nights, exc)
         return None, False
-    price = _extract_headline_price(md, expected_nights=nights)
+    price = _extract_per_night_price(md, expected_nights=nights)
     if price is None:
         # No headline price found — most likely the date is sold out or the
         # minimum-stay constraint excludes this length. Distinguish "not
