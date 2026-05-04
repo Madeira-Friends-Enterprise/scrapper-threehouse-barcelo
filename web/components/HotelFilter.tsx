@@ -38,6 +38,22 @@ export function PriceTable({ rows, hotels }: Props) {
   const stayLabel = (n: number | null) =>
     n == null ? "Per night" : `${n} night${n > 1 ? "s" : ""}`;
 
+  const sources = useMemo(() => {
+    // Distinct (hotelName, sourceUrl) for the currently filtered rows so the
+    // user can click through to the live listing and verify the price our
+    // scraper recorded matches what the booking engine still shows.
+    const seen = new Map<string, { hotelName: string; brand: string; url: string }>();
+    for (const r of rows) {
+      if (brandFilter !== "all" && r.brand !== brandFilter) continue;
+      if (hotelFilter !== "all" && hotelKey(r.brand, r.hotelId) !== hotelFilter) continue;
+      if (!r.sourceUrl) continue;
+      if (!seen.has(r.sourceUrl)) {
+        seen.set(r.sourceUrl, { hotelName: r.hotelName, brand: r.brand, url: r.sourceUrl });
+      }
+    }
+    return Array.from(seen.values()).slice(0, 20);
+  }, [rows, brandFilter, hotelFilter]);
+
   const filtered = useMemo(() => {
     return rows.filter((r) => {
       if (brandFilter !== "all" && r.brand !== brandFilter) return false;
@@ -142,7 +158,8 @@ export function PriceTable({ rows, hotels }: Props) {
             <option value="none">Per-night calendar</option>
             <option value="1">1 night</option>
             <option value="2">2 nights</option>
-            <option value="3">3 nights (normal)</option>
+            <option value="3">3 nights</option>
+            <option value="7">7 nights (weekly)</option>
           </select>
         </label>
 
@@ -162,6 +179,37 @@ export function PriceTable({ rows, hotels }: Props) {
           </button>
         </div>
       </div>
+
+      {sources.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-ink/60 font-medium">Sources:</span>
+          {sources.map((s) => (
+            <a
+              key={s.url}
+              href={s.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-full border border-black/10 bg-white hover:bg-black/[0.03] transition"
+              title={s.url}
+            >
+              <span
+                className={clsx(
+                  "inline-block w-1.5 h-1.5 rounded-full",
+                  s.brand === "Threehouse"
+                    ? "bg-amber-500"
+                    : s.brand === "Barceló"
+                      ? "bg-blue-500"
+                      : s.brand.startsWith("Savoy")
+                        ? "bg-rose-500"
+                        : "bg-slate-500",
+                )}
+              />
+              <span className="text-ink/80">{s.hotelName}</span>
+              <span className="text-ink/40">↗</span>
+            </a>
+          ))}
+        </div>
+      )}
 
       <div className="overflow-x-auto max-h-[70vh] border border-black/5 rounded-lg">
         <table className="min-w-full text-sm">
