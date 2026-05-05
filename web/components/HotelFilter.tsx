@@ -230,7 +230,14 @@ export function PriceTable({ rows, hotels }: Props) {
                 </Td>
                 <Td className="text-xs text-ink/70">{stayLabel(r.stayNights)}</Td>
                 <Td>{r.city || "—"}</Td>
-                <Td className="text-right font-medium">{formatCurrency(r.price, r.currency)}</Td>
+                <Td className="text-right font-medium">
+                  {formatCurrency(r.price, r.currency)}
+                  {r.stayNights != null && r.stayNights > 1 && r.price != null && (
+                    <div className="text-[10px] font-normal text-ink/40">
+                      ≈ {formatCurrency(r.price / r.stayNights, r.currency)}/n
+                    </div>
+                  )}
+                </Td>
                 <Td>{r.available ? "✓" : "—"}</Td>
               </tr>
             ))}

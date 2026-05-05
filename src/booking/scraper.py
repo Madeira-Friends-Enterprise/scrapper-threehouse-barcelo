@@ -27,21 +27,20 @@ STAY_NIGHTS = (1, 2, 3, 7)
 BOOKING_BASE = "https://www.booking.com"
 SCRAPE_THROTTLE_SECONDS = 0.2  # gentle pacing between Booking calls
 
-# Per-night rate inside a room card (the "€ X per night" line). Booking
-# applies its own length-of-stay rules: 1-night books often quote a much
-# higher per-night rate than 7-night books for the same dates, even when
-# the *total* stay price is identical. The client cares about that
-# per-night number, so that's what we record as `price`.
-PER_NIGHT_RE = re.compile(
-    r"€\s*([\d,.]+)\s*(?:<br>|\s)+per\s+night",
+# Total-stay headline ("€ X for N night(s)" or "€ X<br>N nights" inside a
+# room card). This is the number Booking shows in its own calendar
+# overview, including cleaning fee — the "from €X" the user sees when
+# scrolling through May/June. We record it as `price` so the table can be
+# compared 1-to-1 against booking.com without subtracting fees.
+HEADLINE_RE = re.compile(
+    r"€\s*([\d,.]+)\s*(?:for\s+)?(?:<br>|\s)+(\d+)\s+night",
     re.IGNORECASE,
 )
 
-# Headline pattern used as a sanity check that the page actually rendered
-# the requested stay length (and isn't being silently coerced to a
-# different one by Booking's minimum-stay rules).
-HEADLINE_RE = re.compile(
-    r"€\s*([\d,.]+)\s*(?:for\s+)?(?:<br>|\s)+(\d+)\s+night",
+# Kept for diagnostics / future per-night display, but not used as the
+# primary `price` value any more.
+PER_NIGHT_RE = re.compile(
+    r"€\s*([\d,.]+)\s*(?:<br>|\s)+per\s+night",
     re.IGNORECASE,
 )
 
@@ -100,36 +99,33 @@ def _parse_eur_amount(raw: str) -> float | None:
         return None
 
 
-def _extract_per_night_price(md: str, expected_nights: int) -> float | None:
-    """Return the cheapest "€ X per night" value, but only after confirming
-    the page's headline reports the same stay length we requested.
+def _extract_total_stay_price(md: str, expected_nights: int) -> float | None:
+    """Return the lowest "€ X for N night(s)" total across all rooms on the
+    page, but only after confirming the page's headline reports the same
+    stay length we requested — matches Booking's calendar "from €X"
+    semantic (cheapest room, requested stay length, total stay including
+    cleaning fee).
 
-    Without that guard, Booking's minimum-stay enforcement leaks: a request
-    for 1 night may render a 2-night card, and we'd silently record the
-    longer-stay per-night rate against the 1-night row.
+    Without the headline guard, Booking's minimum-stay enforcement leaks:
+    a request for 1 night may render a 2-night card, and we'd silently
+    record the longer-stay total against the 1-night row.
+    Without the MIN aggregation, we'd record whichever total Firecrawl
+    happened to render first instead of the cheapest available — diverging
+    from what Booking displays in its own calendar overview.
     """
+    candidates: list[float] = []
     for h in HEADLINE_RE.finditer(md):
         try:
             if int(h.group(2)) != expected_nights:
                 continue
         except (ValueError, IndexError):
             continue
-        # Found a card whose headline matches the requested stay length.
-        # The "€ X per night" line is the immediately preceding price token
-        # within ~200 chars before this headline (room cards render
-        # per-night → total → label in that order).
-        window_start = max(0, h.start() - 250)
-        window = md[window_start:h.start()]
-        per_night_matches = list(PER_NIGHT_RE.finditer(window))
-        if per_night_matches:
-            return _parse_eur_amount(per_night_matches[-1].group(1))
-        # Fallback: total / nights, if we can find the total and nights
-        # are non-zero. Less precise (drops cleaning fees / extras into
-        # the per-night) but better than nothing.
         total = _parse_eur_amount(h.group(1))
-        if total is not None and expected_nights > 0:
-            return round(total / expected_nights, 2)
-    return None
+        if total is not None:
+            candidates.append(total)
+    if not candidates:
+        return None
+    return min(candidates)
 
 
 def _build_url(listing: BookingListing, checkin: date, nights: int) -> str:
@@ -158,7 +154,7 @@ def _scrape_one(
     except FirecrawlError as exc:
         log.warning("booking %s %s n=%d failed: %s", listing.hotel_id, checkin, nights, exc)
         return None, False
-    price = _extract_per_night_price(md, expected_nights=nights)
+    price = _extract_total_stay_price(md, expected_nights=nights)
     if price is None:
         # No headline price found — most likely the date is sold out or the
         # minimum-stay constraint excludes this length. Distinguish "not

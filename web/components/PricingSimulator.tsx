@@ -65,14 +65,17 @@ export function PricingSimulator({ rows, hotels }: Props) {
 
   const observedSavoyRatios = useMemo(() => {
     // For each Savoy date with all four stay lengths priced, compute the
-    // per-night ratios to the 7-night rate. Show median.
+    // per-night ratios to the 7-night per-night rate. The Booking row
+    // stores TOTAL stay price (matches what booking.com shows in its
+    // calendar), so per-night = total / stay_nights before ratio-ing.
     const byDate = new Map<string, Map<number, number>>();
     for (const r of rows) {
       if (!r.brand.startsWith("Savoy")) continue;
-      if (r.stayNights == null || r.price == null) continue;
+      if (r.stayNights == null || r.stayNights <= 0 || r.price == null) continue;
       const k = `${r.brand}__${r.hotelId}__${r.date}`;
       if (!byDate.has(k)) byDate.set(k, new Map());
-      byDate.get(k)!.set(r.stayNights, r.price);
+      // Convert stored total to per-night for the ratio analysis.
+      byDate.get(k)!.set(r.stayNights, r.price / r.stayNights);
     }
     const ratios: Record<number, number[]> = { 1: [], 2: [], 3: [] };
     for (const stays of byDate.values()) {
