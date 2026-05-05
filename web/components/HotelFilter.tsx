@@ -190,18 +190,6 @@ export function PriceTable({ rows, hotels }: Props) {
           <ul className="space-y-1">
             {sources.map((s) => (
               <li key={s.url} className="flex items-baseline gap-2">
-                <span
-                  className={clsx(
-                    "inline-block w-1.5 h-1.5 rounded-full shrink-0 translate-y-[-1px]",
-                    s.brand === "Threehouse"
-                      ? "bg-amber-500"
-                      : s.brand === "Barceló"
-                        ? "bg-blue-500"
-                        : s.brand.startsWith("Savoy")
-                          ? "bg-rose-500"
-                          : "bg-slate-500",
-                  )}
-                />
                 <span className="text-ink/70 min-w-[180px] truncate">{s.label}</span>
                 <a
                   href={s.url}
@@ -235,22 +223,7 @@ export function PriceTable({ rows, hotels }: Props) {
             {filtered.slice(0, 5000).map((r, i) => (
               <tr key={i} className={clsx(i % 2 ? "bg-black/[0.015]" : "bg-white")}>
                 <Td>{formatDate(r.date)}</Td>
-                <Td>
-                  <span
-                    className={clsx(
-                      "inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold",
-                      r.brand === "Threehouse"
-                        ? "bg-amber-100 text-amber-800"
-                        : r.brand === "Barceló"
-                          ? "bg-blue-100 text-blue-800"
-                          : r.brand.startsWith("Savoy")
-                            ? "bg-rose-100 text-rose-800"
-                            : "bg-slate-100 text-slate-800",
-                    )}
-                  >
-                    {r.brand}
-                  </span>
-                </Td>
+                <Td className="text-xs text-ink/80">{r.brand}</Td>
                 <Td className="max-w-[220px] truncate">{r.hotelName}</Td>
                 <Td className="max-w-[220px] truncate text-xs text-ink/70">
                   {r.roomType || <span className="text-ink/40">aggregate</span>}
