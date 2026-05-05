@@ -14,6 +14,7 @@ const tabs = [
   { href: "/chart", label: "Monthly average" },
   { href: "/compare", label: "Compare" },
   { href: "/history", label: "History" },
+  { href: "/pricing", label: "Pricing rules" },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
