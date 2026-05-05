@@ -31,6 +31,19 @@ export function RefreshButton() {
     setMounted(true);
   }, []);
 
+  // Other buttons on the page (e.g. the hero CTA on the main page) trigger
+  // the same scrape via window.dispatchEvent("scrape:start"). The header
+  // RefreshButton owns the modal, so all triggers funnel through one
+  // overlay regardless of who clicked.
+  useEffect(() => {
+    const handler = () => {
+      if (phase !== "dispatching" && phase !== "running") void start();
+    };
+    window.addEventListener("scrape:start", handler);
+    return () => window.removeEventListener("scrape:start", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
   async function cancel() {
     if (!runId) return;
     setCancelling(true);
@@ -74,8 +87,11 @@ export function RefreshButton() {
           if (data.conclusion === "success") {
             setPhase("done");
             startTransition(() => router.refresh());
-            // Auto-dismiss after a moment.
-            setTimeout(() => setPhase("idle"), 2500);
+            // Keep the success modal up long enough for the user to read it
+            // (Booking runs are 60-75 min — we don't want to flash "done"
+            // for 2 s after they've waited an hour). Auto-close after 30 s,
+            // or sooner if the user hits Close.
+            setTimeout(() => setPhase("idle"), 30000);
           } else {
             setPhase("error");
             setError(`Run ${data.conclusion}. See ${data.htmlUrl}`);
@@ -169,7 +185,7 @@ export function RefreshButton() {
           <>
             <div className="flex items-center gap-3">
               <Spinner />
-              <div className="font-semibold">Scraping Threehouse + Barceló…</div>
+              <div className="font-semibold">Scraping all sources…</div>
             </div>
             <div className="text-sm text-ink/70">
               {status?.currentStep ?? "Starting…"}
@@ -183,9 +199,12 @@ export function RefreshButton() {
                 Elapsed: {fmtDuration(elapsed)}
                 {status?.runNumber ? ` · run #${status.runNumber}` : ""}
               </span>
+              <span>Typical: 60–75 min</span>
             </div>
             <p className="text-xs text-ink/50">
-              Closes automatically when new prices are saved to Google Sheets.
+              Threehouse + Barceló finish in ~1 min. Booking adds ~70 min
+              (280 calls behind their WAF). The bar stays up until the
+              full run is complete and the new prices are in the Sheet.
             </p>
             <div className="flex justify-end">
               <button
@@ -205,7 +224,18 @@ export function RefreshButton() {
               <div className="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center text-sm">✓</div>
               <div className="font-semibold">Scrape complete</div>
             </div>
-            <p className="text-sm text-ink/60">Refreshing data…</p>
+            <p className="text-sm text-ink/60">
+              New prices saved to Google Sheets. The page is refreshing —
+              check the table for updated rows.
+            </p>
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-ink/40">
+                Total time: {fmtDuration(elapsed)}
+              </span>
+              <button className="btn btn-primary" onClick={() => setPhase("idle")}>
+                Close
+              </button>
+            </div>
           </>
         )}
 

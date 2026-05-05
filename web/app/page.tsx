@@ -2,6 +2,7 @@ import { getDataset } from "@/lib/data";
 import { Stats } from "@/components/Stats";
 import { PriceTable } from "@/components/HotelFilter";
 import { EmptyState } from "@/components/EmptyState";
+import { HeroScrape } from "@/components/HeroScrape";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -11,15 +12,19 @@ export default async function HomePage() {
     const { latest, meta } = await getDataset();
     if (latest.length === 0) {
       return (
-        <EmptyState
-          title="No data yet"
-          hint="Hit ⚡ Scrape now to trigger the GitHub Action. The overlay will close once prices are saved to Google Sheets."
-        />
+        <>
+          <HeroScrape />
+          <EmptyState
+            title="No data yet"
+            hint="Hit Scrape now above. A progress bar will appear and stay until every source finishes (~60–75 min)."
+          />
+        </>
       );
     }
     return (
       <>
         <Stats meta={meta} />
+        <HeroScrape />
         <PriceTable rows={latest} hotels={meta.hotels} />
       </>
     );
