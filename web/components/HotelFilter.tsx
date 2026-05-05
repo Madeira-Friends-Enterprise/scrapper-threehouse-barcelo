@@ -39,19 +39,23 @@ export function PriceTable({ rows, hotels }: Props) {
     n == null ? "Per night" : `${n} night${n > 1 ? "s" : ""}`;
 
   const sources = useMemo(() => {
-    // Distinct (hotelName, sourceUrl) for the currently filtered rows so the
-    // user can click through to the live listing and verify the price our
-    // scraper recorded matches what the booking engine still shows.
-    const seen = new Map<string, { hotelName: string; brand: string; url: string }>();
+    // Distinct sourceUrl for the currently filtered rows so the user can
+    // click through to the live listing and verify the price our scraper
+    // recorded matches what the booking engine still shows.
+    // Label = the room type when there is one (Threehouse rooms each have
+    // their own /estadia/{slug}/ page), otherwise the hotel name —
+    // otherwise every Threehouse pill just read "Three House Hotel".
+    const seen = new Map<string, { label: string; brand: string; url: string }>();
     for (const r of rows) {
       if (brandFilter !== "all" && r.brand !== brandFilter) continue;
       if (hotelFilter !== "all" && hotelKey(r.brand, r.hotelId) !== hotelFilter) continue;
       if (!r.sourceUrl) continue;
       if (!seen.has(r.sourceUrl)) {
-        seen.set(r.sourceUrl, { hotelName: r.hotelName, brand: r.brand, url: r.sourceUrl });
+        const label = r.roomType?.trim() || r.hotelName;
+        seen.set(r.sourceUrl, { label, brand: r.brand, url: r.sourceUrl });
       }
     }
-    return Array.from(seen.values()).slice(0, 20);
+    return Array.from(seen.values());
   }, [rows, brandFilter, hotelFilter]);
 
   const filtered = useMemo(() => {
@@ -181,33 +185,35 @@ export function PriceTable({ rows, hotels }: Props) {
       </div>
 
       {sources.length > 0 && (
-        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-ink/60 font-medium">Sources:</span>
-          {sources.map((s) => (
-            <a
-              key={s.url}
-              href={s.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-full border border-black/10 bg-white hover:bg-black/[0.03] transition"
-              title={s.url}
-            >
-              <span
-                className={clsx(
-                  "inline-block w-1.5 h-1.5 rounded-full",
-                  s.brand === "Threehouse"
-                    ? "bg-amber-500"
-                    : s.brand === "Barceló"
-                      ? "bg-blue-500"
-                      : s.brand.startsWith("Savoy")
-                        ? "bg-rose-500"
-                        : "bg-slate-500",
-                )}
-              />
-              <span className="text-ink/80">{s.hotelName}</span>
-              <span className="text-ink/40">↗</span>
-            </a>
-          ))}
+        <div className="mb-3 text-xs">
+          <div className="text-ink/60 font-medium mb-1.5">Sources:</div>
+          <ul className="space-y-1">
+            {sources.map((s) => (
+              <li key={s.url} className="flex items-baseline gap-2">
+                <span
+                  className={clsx(
+                    "inline-block w-1.5 h-1.5 rounded-full shrink-0 translate-y-[-1px]",
+                    s.brand === "Threehouse"
+                      ? "bg-amber-500"
+                      : s.brand === "Barceló"
+                        ? "bg-blue-500"
+                        : s.brand.startsWith("Savoy")
+                          ? "bg-rose-500"
+                          : "bg-slate-500",
+                  )}
+                />
+                <span className="text-ink/70 min-w-[180px] truncate">{s.label}</span>
+                <a
+                  href={s.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-accent hover:underline break-all"
+                >
+                  {s.url}
+                </a>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
