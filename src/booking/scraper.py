@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from playwright.sync_api import BrowserContext  # kept for signature compatibility
+from playwright.sync_api import BrowserContext, TimeoutError as PWTimeout
 
 from ..firecrawl_client import FirecrawlError, scrape_batch_markdown, scrape_markdown
 from ..models import PriceRow
@@ -181,6 +182,67 @@ def _build_url(listing: BookingListing, checkin: date, nights: int) -> str:
     )
 
 
+# Booking embeds the price card data as JSON inside the page. The keys we
+# want surfaced from "b_legacy_data" / "b_raw_price" / "b_value":
+#   b_raw_price       — Today's price total (€1941.13 for the user's example)
+#   b_net_room_price  — base × nights, pre-VAT, pre-cleaning
+B_RAW_PRICE_RE = re.compile(r'"b_raw_price"\s*:\s*([\d.]+)')
+
+
+def _extract_today_price_from_html(html: str) -> float | None:
+    """Pick the lowest `b_raw_price` across all room-rate JSON blobs.
+
+    Each available room emits its own b_raw_price; cheapest matches what
+    Booking calls "Today's price · Includes taxes and charges" in its
+    headline box, which is the value the client wants on the dashboard.
+    """
+    candidates: list[float] = []
+    for m in B_RAW_PRICE_RE.finditer(html):
+        try:
+            v = float(m.group(1))
+        except ValueError:
+            continue
+        if v > 0:
+            candidates.append(v)
+    if not candidates:
+        return None
+    return round(min(candidates), 2)
+
+
+def _scrape_via_playwright(
+    page, listing: BookingListing, checkin: date, nights: int
+) -> tuple[float | None, bool]:
+    """Direct Playwright scrape — bypasses Firecrawl entirely.
+
+    Booking renders a JSON blob with the exact "Today's price" total
+    (b_raw_price field) in the page HTML once the room-availability
+    section has hydrated. We just have to wait for it and pluck the
+    minimum.
+    """
+    url = _build_url(listing, checkin, nights)
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=45000)
+    except PWTimeout:
+        return None, False
+    # Wait for the room-card section to appear (it carries the price JSON).
+    try:
+        page.wait_for_selector("#hp_availability_style_changes", timeout=20000)
+    except PWTimeout:
+        # Page loaded but availability never rendered → genuinely no
+        # availability for this date / stay-length combo.
+        html = page.content()
+        return None, "Access Denied" not in html and "captcha" not in html.lower()
+    # Settle async hydration of the price JSON.
+    page.wait_for_timeout(2000)
+    page.evaluate("window.scrollTo(0, 1500)")
+    page.wait_for_timeout(2000)
+    html = page.content()
+    if "Access Denied" in html or "Are you a robot" in html:
+        return None, False
+    price = _extract_today_price_from_html(html)
+    return price, price is not None or len(html) > 500_000
+
+
 def _scrape_one(
     listing: BookingListing, checkin: date, nights: int
 ) -> tuple[float | None, bool]:
@@ -312,66 +374,64 @@ def _build_url_plan(today: date, end_date: date) -> list[tuple[BookingListing, d
     return plan
 
 
-def scrape_booking(_ctx: BrowserContext | None, end_date: date) -> list[PriceRow]:
+def scrape_booking(ctx: BrowserContext | None, end_date: date) -> list[PriceRow]:
     today = date.today()
     plan = _build_url_plan(today, end_date)
-    url_to_meta: dict[str, tuple[BookingListing, date, int]] = {}
-    for listing, d, n in plan:
-        url_to_meta[_build_url(listing, d, n)] = (listing, d, n)
-
     log.info(
-        "booking: %d urls (daily 1n + weekly 2/3/7n) via Firecrawl batch",
-        len(url_to_meta),
+        "booking: %d (listing, date, nights) entries via Playwright direct",
+        len(plan),
     )
 
-    actions = [
-        {"type": "wait", "milliseconds": 4000},
-        {"type": "scroll", "direction": "down", "amount": 1500},
-        {"type": "wait", "milliseconds": 1500},
-    ]
-
-    try:
-        results = scrape_batch_markdown(
-            list(url_to_meta.keys()),
-            actions=actions,
-            wait_for_ms=4000,
-            timeout_ms=60000,
-            poll_interval_s=10.0,
-            max_wait_s=3000,  # 50 min cap; workflow timeout is 90 min
-        )
-    except FirecrawlError as exc:
-        log.error("booking: batch failed (%s) — falling back to serial", exc)
-        results = {}
-
     rows: list[PriceRow] = []
-    for url, (listing, d, n) in url_to_meta.items():
-        md = results.get(url)
-        if md is None:
-            # Batch missed this URL (or batch failed entirely). Try a single
-            # serial scrape as a per-row fallback so we don't drop the row.
-            try:
-                md = scrape_markdown(url, actions=actions, wait_for_ms=4000, timeout_ms=60000)
-            except FirecrawlError:
-                md = None
-        price = _extract_total_stay_price(md, expected_nights=n) if md else None
-        rows.append(
-            PriceRow(
-                brand=listing.brand,
-                hotel_name=listing.hotel_name,
-                hotel_id=listing.hotel_id,
-                room_type="",
-                room_id="",
-                city=listing.city,
-                date=d,
-                price=price,
-                currency="EUR",
-                available=price is not None,
-                stay_nights=n,
-                source_url=listing.url,
-            )
-        )
+    consecutive_failures = 0
 
-    by_stay: dict[int, tuple[int, int]] = {}  # nights -> (rows, priced)
+    if ctx is None:
+        log.error("booking: no playwright context, cannot scrape")
+        return rows
+
+    page = ctx.new_page()
+    try:
+        for idx, (listing, d, n) in enumerate(plan, 1):
+            try:
+                price, captured = _scrape_via_playwright(page, listing, d, n)
+            except Exception as exc:
+                log.warning("booking %s %s n=%d crash: %s", listing.hotel_id, d, n, exc)
+                price, captured = None, False
+
+            if not captured:
+                consecutive_failures += 1
+                if consecutive_failures >= 8:
+                    log.error(
+                        "booking: %d consecutive blocked/failed pages — abandoning remaining %d",
+                        consecutive_failures, len(plan) - idx,
+                    )
+                    break
+            else:
+                consecutive_failures = 0
+
+            rows.append(
+                PriceRow(
+                    brand=listing.brand,
+                    hotel_name=listing.hotel_name,
+                    hotel_id=listing.hotel_id,
+                    room_type="",
+                    room_id="",
+                    city=listing.city,
+                    date=d,
+                    price=price,
+                    currency="EUR",
+                    available=price is not None,
+                    stay_nights=n,
+                    source_url=listing.url,
+                )
+            )
+            if idx % 25 == 0:
+                priced_so_far = sum(1 for r in rows if r.price is not None)
+                log.info("booking: %d/%d done (%d priced so far)", idx, len(plan), priced_so_far)
+    finally:
+        page.close()
+
+    by_stay: dict[int, tuple[int, int]] = {}
     for r in rows:
         n = r.stay_nights or 0
         rows_n, priced_n = by_stay.get(n, (0, 0))
@@ -379,5 +439,8 @@ def scrape_booking(_ctx: BrowserContext | None, end_date: date) -> list[PriceRow
     for n in sorted(by_stay):
         rn, pn = by_stay[n]
         log.info("booking: stay=%dn -> %d rows (%d priced)", n, rn, pn)
-    log.info("booking: %d rows total (%d priced)", len(rows), sum(1 for r in rows if r.price is not None))
+    log.info(
+        "booking: %d rows total (%d priced)",
+        len(rows), sum(1 for r in rows if r.price is not None),
+    )
     return rows
