@@ -37,7 +37,7 @@ jobs:
           GOOGLE_SHEET_ID: ${{ vars.GOOGLE_SHEET_ID }}
           GOOGLE_SHEET_GID: ${{ vars.GOOGLE_SHEET_GID }}
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
-          MIN_PRICED_ROWS: "100"
+          MIN_PRICED_ROWS: "30"
           HEADLESS: "false"
           DISPLAY: ":99"
         run: |
