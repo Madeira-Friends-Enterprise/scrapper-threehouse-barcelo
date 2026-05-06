@@ -27,22 +27,36 @@ STAY_NIGHTS = (1, 2, 3, 7)
 BOOKING_BASE = "https://www.booking.com"
 SCRAPE_THROTTLE_SECONDS = 0.2  # gentle pacing between Booking calls
 
-# Total-stay headline ("€ X for N night(s)" or "€ X<br>N nights" inside a
-# room card). This is the number Booking shows in its own calendar
-# overview, including cleaning fee — the "from €X" the user sees when
-# scrolling through May/June. We record it as `price` so the table can be
-# compared 1-to-1 against booking.com without subtracting fees.
+# The room-card headline "€ X for N nights" is the room+cleaning subtotal
+# — what Booking shows in the room detail card. NOT what booking.com
+# surfaces as "Today's price · Includes taxes and charges" in its main
+# headline box, which is the number guests actually see and that the user
+# wants to match. Booking's headline = base × nights × (1 + VAT) + cleaning
+# + city_tax × adults × nights, where the four pieces are also rendered
+# inside the room card markdown:
+#   €1,647 per night   (base, pre-VAT)
+#   €224.25 Cleaning fee per stay
+#   €2 City tax per person per night, 4 % VAT
+# We record the headline-equivalent total so the table matches booking.com
+# row-for-row.
 HEADLINE_RE = re.compile(
     r"€\s*([\d,.]+)\s*(?:for\s+)?(?:<br>|\s)+(\d+)\s+night",
     re.IGNORECASE,
 )
-
-# Kept for diagnostics / future per-night display, but not used as the
-# primary `price` value any more.
 PER_NIGHT_RE = re.compile(
     r"€\s*([\d,.]+)\s*(?:<br>|\s)+per\s+night",
     re.IGNORECASE,
 )
+CLEANING_RE = re.compile(
+    r"€\s*([\d,.]+)\s+Cleaning\s+fee\s+per\s+stay",
+    re.IGNORECASE,
+)
+CITY_TAX_RE = re.compile(
+    r"€\s*([\d,.]+)\s+City\s+tax\s+per\s+person\s+per\s+night",
+    re.IGNORECASE,
+)
+VAT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*VAT", re.IGNORECASE)
+ADULTS = 2
 
 
 @dataclass(frozen=True)
@@ -100,18 +114,26 @@ def _parse_eur_amount(raw: str) -> float | None:
 
 
 def _extract_total_stay_price(md: str, expected_nights: int) -> float | None:
-    """Return the lowest "€ X for N night(s)" total across all rooms on the
-    page, but only after confirming the page's headline reports the same
-    stay length we requested — matches Booking's calendar "from €X"
-    semantic (cheapest room, requested stay length, total stay including
-    cleaning fee).
+    """Return Booking's "Today's price · Includes taxes and charges"
+    equivalent for the requested stay length, picking the cheapest room
+    on the page.
 
-    Without the headline guard, Booking's minimum-stay enforcement leaks:
-    a request for 1 night may render a 2-night card, and we'd silently
-    record the longer-stay total against the 1-night row.
-    Without the MIN aggregation, we'd record whichever total Firecrawl
-    happened to render first instead of the cheapest available — diverging
-    from what Booking displays in its own calendar overview.
+    Booking renders four pieces inside each room card. We combine them
+    with the same formula booking.com uses for its headline box:
+
+        total = base_per_night × nights × (1 + VAT)
+              + cleaning_fee
+              + city_tax × ADULTS × nights
+
+    Verified against the live page on 2026-05-08 for Savoy Monumentalis VII
+    (1 night, 2 adults):
+        1647 × 1 × 1.04 + 224.25 + 2 × 2 × 1 = 1941.13 → €1,941 ✓
+        which is exactly the "Today's price €1,941 Includes taxes and
+        charges" the user screenshot showed.
+
+    Falls back to the raw "€ X for N nights" headline if any of the
+    components are missing — that yields the same number the room card
+    shows (cleaning included, VAT and city tax excluded).
     """
     candidates: list[float] = []
     for h in HEADLINE_RE.finditer(md):
@@ -120,9 +142,32 @@ def _extract_total_stay_price(md: str, expected_nights: int) -> float | None:
                 continue
         except (ValueError, IndexError):
             continue
-        total = _parse_eur_amount(h.group(1))
-        if total is not None:
-            candidates.append(total)
+        # Look at the ~600 char window around this headline for the
+        # accompanying per-night, cleaning, city-tax, and VAT lines.
+        window_start = max(0, h.start() - 400)
+        window_end = min(len(md), h.end() + 400)
+        window = md[window_start:window_end]
+        per_night_m = PER_NIGHT_RE.search(window)
+        cleaning_m = CLEANING_RE.search(window)
+        vat_m = VAT_RE.search(window)
+        city_m = CITY_TAX_RE.search(window)
+        per_night = _parse_eur_amount(per_night_m.group(1)) if per_night_m else None
+        cleaning = _parse_eur_amount(cleaning_m.group(1)) if cleaning_m else 0.0
+        vat_pct = float(vat_m.group(1)) / 100.0 if vat_m else 0.0
+        city_tax = _parse_eur_amount(city_m.group(1)) if city_m else 0.0
+        if per_night is not None:
+            total = (
+                per_night * expected_nights * (1 + vat_pct)
+                + (cleaning or 0.0)
+                + (city_tax or 0.0) * ADULTS * expected_nights
+            )
+            candidates.append(round(total, 2))
+            continue
+        # Fallback: just the room-card headline value (cleaning included,
+        # VAT/city-tax excluded). Better than dropping the row entirely.
+        bare = _parse_eur_amount(h.group(1))
+        if bare is not None:
+            candidates.append(bare)
     if not candidates:
         return None
     return min(candidates)
