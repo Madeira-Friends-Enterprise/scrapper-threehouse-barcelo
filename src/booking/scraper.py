@@ -229,26 +229,37 @@ def _scrape_listing_stay(
     return rows
 
 
+DAILY_HORIZON_DAYS = 28  # how far out we keep daily 1n granularity
+
+
 def _build_url_plan(today: date, end_date: date) -> list[tuple[BookingListing, date, int]]:
     """Build the full set of (listing, date, nights) we want to fetch.
 
-    - Daily 1-night for every day → fills the calendar overlay 1-to-1 with
-      Booking.com (262 × 2 = 524 URLs).
-    - Weekly Mondays for the 2/3/7-night tiers → keeps the 1n vs 2/3/7n
-      premium-ratio comparison alive without exploding call volume
-      (~35 × 3 × 2 = 210 URLs).
-    Total per run ≈ 734 URLs, dispatched as a single Firecrawl batch.
+    Density was tuned down on 2026-05-06 after a daily-everywhere plan
+    (~734 URLs) blew the Firecrawl credit budget mid-batch (402). Current
+    shape is the cheapest version that still satisfies "calendar shows
+    real per-day prices for the near-term window the client cares about":
+
+    - Daily 1-night for the next DAILY_HORIZON_DAYS (≈28 days × 2 listings
+      = 56 URLs). That's the part of the calendar guests actually book
+      against.
+    - Weekly Mondays for 1-night for the rest of the year so the heatmap
+      isn't blank past the horizon (~33 × 2 = 66 URLs).
+    - Weekly Mondays for 2/3/7-night so the per-night ratio analysis
+      still has data (~35 × 3 × 2 = 210 URLs).
+    Total per run ≈ 332 URLs, well within the free Firecrawl tier.
     """
     plan: list[tuple[BookingListing, date, int]] = []
-    weekly = set(_weekly_anchors(today, end_date))
+    horizon = today + timedelta(days=DAILY_HORIZON_DAYS)
+    weekly_set = set(_weekly_anchors(today, end_date))
     d = today
     while d <= end_date:
+        is_weekly = d in weekly_set
+        within_horizon = d <= horizon
         for listing in LISTINGS:
-            # Daily 1-night
-            if d + timedelta(days=1) <= end_date + timedelta(days=1):
+            if (within_horizon or is_weekly) and (d + timedelta(days=1) <= end_date + timedelta(days=1)):
                 plan.append((listing, d, 1))
-            # Weekly anchors get 2/3/7 too
-            if d in weekly:
+            if is_weekly:
                 for n in (2, 3, 7):
                     if d + timedelta(days=n) <= end_date + timedelta(days=1):
                         plan.append((listing, d, n))
