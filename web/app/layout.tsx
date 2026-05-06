@@ -4,8 +4,8 @@ import Link from "next/link";
 import { RefreshButton } from "@/components/RefreshButton";
 
 export const metadata: Metadata = {
-  title: "Threehouse & Barceló Prices",
-  description: "Real-time nightly price scraper — live AI fetch + dashboard.",
+  title: "Savoy Booking Prices",
+  description: "Per-day Booking.com prices for Savoy Insular V and Savoy Monumentalis VII.",
 };
 
 const tabs = [
@@ -24,7 +24,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <header className="border-b border-black/5 bg-white/80 backdrop-blur sticky top-0 z-10">
           <div className="mx-auto max-w-7xl px-4 h-14 flex items-center gap-4">
             <Link href="/" className="font-semibold tracking-tight text-ink">
-              Threehouse & Barceló Prices
+              Savoy Booking Prices
             </Link>
             <nav className="flex gap-1 ml-4">
               {tabs.map((t) => (

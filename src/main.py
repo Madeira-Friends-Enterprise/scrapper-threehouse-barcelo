@@ -6,14 +6,17 @@ import os
 import sys
 from collections import Counter
 
-from .barcelo.discover import discover_barcelo_portugal
-from .barcelo.scraper import scrape_all_barcelo
 from .booking.scraper import scrape_booking
 from .browser import playwright_context
 from .config import Settings
 from .models import PriceRow
 from .sheets import write_rows
-from .threehouse import scrape_threehouse
+
+# Threehouse + Barceló scrapers stay in the repo (src/threehouse.py,
+# src/barcelo/) but are no longer wired into the run, per the user
+# pivoting the dashboard to focus only on the two Booking listings
+# (Savoy Insular + Savoy Monumentalis). To re-enable later, restore the
+# imports and the corresponding blocks in `cli()`.
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -38,14 +41,13 @@ def _summary(rows: list[PriceRow]) -> str:
 
 
 def cli() -> int:
-    parser = argparse.ArgumentParser(description="Threehouse + Barceló + Booking PT price scraper.")
+    parser = argparse.ArgumentParser(description="Booking (Savoy) PT price scraper.")
     parser.add_argument(
         "--only",
-        choices=["threehouse", "barcelo", "booking"],
-        help="Limit to one source",
+        choices=["booking"],
+        help="Limit to one source (currently only booking is wired in)",
     )
     parser.add_argument("--dry-run", action="store_true", help="Scrape but don't write to Sheets")
-    parser.add_argument("--rediscover", action="store_true", help="Force Barceló hotel rediscovery")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -55,24 +57,6 @@ def cli() -> int:
 
     rows: list[PriceRow] = []
     with playwright_context(settings) as ctx:
-        if args.only in (None, "threehouse"):
-            try:
-                rows.extend(scrape_threehouse(ctx, settings.end_date))
-            except Exception:
-                log.exception("threehouse scraper crashed")
-
-        if args.only in (None, "barcelo"):
-            try:
-                hotels = discover_barcelo_portugal(
-                    ctx, settings.barcelo_cache_path, force=args.rediscover
-                )
-                if hotels:
-                    rows.extend(scrape_all_barcelo(ctx, hotels, settings.end_date))
-                else:
-                    log.warning("barcelo: no hotels discovered, skipping")
-            except Exception:
-                log.exception("barcelo scraper crashed")
-
         if args.only in (None, "booking"):
             try:
                 rows.extend(scrape_booking(ctx, settings.end_date))
