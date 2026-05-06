@@ -59,7 +59,7 @@ export function PriceTable({ rows, hotels }: Props) {
   }, [rows, brandFilter, hotelFilter]);
 
   const filtered = useMemo(() => {
-    return rows.filter((r) => {
+    const filtered = rows.filter((r) => {
       if (brandFilter !== "all" && r.brand !== brandFilter) return false;
       if (hotelFilter !== "all" && hotelKey(r.brand, r.hotelId) !== hotelFilter) return false;
       if (roomFilter !== "all") {
@@ -73,6 +73,22 @@ export function PriceTable({ rows, hotels }: Props) {
       if (onlyAvailable && !r.available) return false;
       return true;
     });
+    // Order: date ascending (today → end of year), then by brand/hotel/room
+    // so rows for the same date stack together. Without an explicit sort
+    // we'd render in Sheet-insertion order — which interleaves stay-length
+    // batches and reads as random.
+    filtered.sort((a, b) => {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      if (a.brand !== b.brand) return a.brand.localeCompare(b.brand);
+      if (a.hotelId !== b.hotelId) return a.hotelId.localeCompare(b.hotelId);
+      const ar = a.roomType || "";
+      const br = b.roomType || "";
+      if (ar !== br) return ar.localeCompare(br);
+      const an = a.stayNights ?? 0;
+      const bn = b.stayNights ?? 0;
+      return an - bn;
+    });
+    return filtered;
   }, [rows, brandFilter, hotelFilter, roomFilter, stayFilter, onlyAvailable]);
 
   const toCsv = () => {
