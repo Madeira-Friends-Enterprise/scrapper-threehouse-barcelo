@@ -50,8 +50,20 @@ export function Heatmap({ rows, hotels }: Props) {
   );
 
   const byDate = useMemo(() => {
+    // Prefer per-night calendar (stay_nights == null, e.g. Threehouse/Barceló)
+    // over fixed-stay rows. For Booking listings (where every row has a
+    // stay_nights tag) prefer 1-night because that's what booking.com itself
+    // displays in its calendar overlay.
+    const score = (r: PriceRow) => {
+      if (r.stayNights == null) return 0;
+      if (r.stayNights === 1) return 1;
+      return 10 + r.stayNights;
+    };
     const m = new Map<string, PriceRow>();
-    for (const r of hotelRows) m.set(r.date, r);
+    for (const r of hotelRows) {
+      const prev = m.get(r.date);
+      if (!prev || score(r) < score(prev)) m.set(r.date, r);
+    }
     return m;
   }, [hotelRows]);
 

@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 from playwright.sync_api import BrowserContext  # kept for signature compatibility
 
-from ..firecrawl_client import FirecrawlError, scrape_markdown
+from ..firecrawl_client import FirecrawlError, scrape_batch_markdown, scrape_markdown
 from ..models import PriceRow
 
 log = logging.getLogger(__name__)
@@ -229,18 +229,99 @@ def _scrape_listing_stay(
     return rows
 
 
+def _build_url_plan(today: date, end_date: date) -> list[tuple[BookingListing, date, int]]:
+    """Build the full set of (listing, date, nights) we want to fetch.
+
+    - Daily 1-night for every day → fills the calendar overlay 1-to-1 with
+      Booking.com (262 × 2 = 524 URLs).
+    - Weekly Mondays for the 2/3/7-night tiers → keeps the 1n vs 2/3/7n
+      premium-ratio comparison alive without exploding call volume
+      (~35 × 3 × 2 = 210 URLs).
+    Total per run ≈ 734 URLs, dispatched as a single Firecrawl batch.
+    """
+    plan: list[tuple[BookingListing, date, int]] = []
+    weekly = set(_weekly_anchors(today, end_date))
+    d = today
+    while d <= end_date:
+        for listing in LISTINGS:
+            # Daily 1-night
+            if d + timedelta(days=1) <= end_date + timedelta(days=1):
+                plan.append((listing, d, 1))
+            # Weekly anchors get 2/3/7 too
+            if d in weekly:
+                for n in (2, 3, 7):
+                    if d + timedelta(days=n) <= end_date + timedelta(days=1):
+                        plan.append((listing, d, n))
+        d += timedelta(days=1)
+    return plan
+
+
 def scrape_booking(_ctx: BrowserContext | None, end_date: date) -> list[PriceRow]:
     today = date.today()
-    anchor_count = len(_weekly_anchors(today, end_date))
+    plan = _build_url_plan(today, end_date)
+    url_to_meta: dict[str, tuple[BookingListing, date, int]] = {}
+    for listing, d, n in plan:
+        url_to_meta[_build_url(listing, d, n)] = (listing, d, n)
+
     log.info(
-        "booking: %d listings × %d stay-lengths × %d weekly anchors = ~%d calls",
-        len(LISTINGS), len(STAY_NIGHTS), anchor_count,
-        len(LISTINGS) * len(STAY_NIGHTS) * anchor_count,
+        "booking: %d urls (daily 1n + weekly 2/3/7n) via Firecrawl batch",
+        len(url_to_meta),
     )
+
+    actions = [
+        {"type": "wait", "milliseconds": 4000},
+        {"type": "scroll", "direction": "down", "amount": 1500},
+        {"type": "wait", "milliseconds": 1500},
+    ]
+
+    try:
+        results = scrape_batch_markdown(
+            list(url_to_meta.keys()),
+            actions=actions,
+            wait_for_ms=4000,
+            timeout_ms=60000,
+            poll_interval_s=10.0,
+            max_wait_s=3000,  # 50 min cap; workflow timeout is 90 min
+        )
+    except FirecrawlError as exc:
+        log.error("booking: batch failed (%s) — falling back to serial", exc)
+        results = {}
+
     rows: list[PriceRow] = []
-    for listing in LISTINGS:
-        for nights in STAY_NIGHTS:
-            rows.extend(_scrape_listing_stay(listing, today, end_date, nights))
-    priced = sum(1 for r in rows if r.price is not None)
-    log.info("booking: %d rows total (%d priced)", len(rows), priced)
+    for url, (listing, d, n) in url_to_meta.items():
+        md = results.get(url)
+        if md is None:
+            # Batch missed this URL (or batch failed entirely). Try a single
+            # serial scrape as a per-row fallback so we don't drop the row.
+            try:
+                md = scrape_markdown(url, actions=actions, wait_for_ms=4000, timeout_ms=60000)
+            except FirecrawlError:
+                md = None
+        price = _extract_total_stay_price(md, expected_nights=n) if md else None
+        rows.append(
+            PriceRow(
+                brand=listing.brand,
+                hotel_name=listing.hotel_name,
+                hotel_id=listing.hotel_id,
+                room_type="",
+                room_id="",
+                city=listing.city,
+                date=d,
+                price=price,
+                currency="EUR",
+                available=price is not None,
+                stay_nights=n,
+                source_url=listing.url,
+            )
+        )
+
+    by_stay: dict[int, tuple[int, int]] = {}  # nights -> (rows, priced)
+    for r in rows:
+        n = r.stay_nights or 0
+        rows_n, priced_n = by_stay.get(n, (0, 0))
+        by_stay[n] = (rows_n + 1, priced_n + (1 if r.price is not None else 0))
+    for n in sorted(by_stay):
+        rn, pn = by_stay[n]
+        log.info("booking: stay=%dn -> %d rows (%d priced)", n, rn, pn)
+    log.info("booking: %d rows total (%d priced)", len(rows), sum(1 for r in rows if r.price is not None))
     return rows

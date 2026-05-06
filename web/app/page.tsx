@@ -1,6 +1,7 @@
 import { getDataset } from "@/lib/data";
 import { Stats } from "@/components/Stats";
 import { PriceTable } from "@/components/HotelFilter";
+import { Heatmap } from "@/components/Heatmap";
 import { EmptyState } from "@/components/EmptyState";
 
 export const dynamic = "force-dynamic";
@@ -20,6 +21,7 @@ export default async function HomePage() {
     return (
       <>
         <Stats meta={meta} />
+        <Heatmap rows={latest} hotels={meta.hotels} />
         <PriceTable rows={latest} hotels={meta.hotels} />
       </>
     );
