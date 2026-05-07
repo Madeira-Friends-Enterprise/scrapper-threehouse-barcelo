@@ -14,12 +14,11 @@ from ..models import PriceRow
 
 log = logging.getLogger(__name__)
 
-# Stay lengths Luis Calado asked us to track. Per-night rate varies
-# dramatically with length (Booking's "single-night premium" rules):
-# Savoy Monumentalis on 2026-09-01 quotes 3,737 €/night for 1 night,
-# 1,868 €/night for 2 nights, and 534 €/night for 7 nights — same
-# total stay price, very different per-night signal for the client.
-STAY_NIGHTS = (1, 2, 3, 7)
+# Stay lengths Luis Calado asked us to track (2026-05-07 update):
+# 1n through 5n. The user wants the per-night exact price for each
+# length so they can derive the % uplift Booking applies vs the
+# 5-night baseline and mirror that on their own listings.
+STAY_NIGHTS = (1, 2, 3, 4, 5)
 
 # Booking shows a city-tax + VAT line that's NOT in the headline price; we
 # leave price as-shown ("excludes city tax / VAT not shown" depending on
@@ -367,7 +366,7 @@ def _build_url_plan(today: date, end_date: date) -> list[tuple[BookingListing, d
             if (within_horizon or is_weekly) and (d + timedelta(days=1) <= end_date + timedelta(days=1)):
                 plan.append((listing, d, 1))
             if is_weekly:
-                for n in (2, 3, 7):
+                for n in (2, 3, 4, 5):
                     if d + timedelta(days=n) <= end_date + timedelta(days=1):
                         plan.append((listing, d, n))
         d += timedelta(days=1)

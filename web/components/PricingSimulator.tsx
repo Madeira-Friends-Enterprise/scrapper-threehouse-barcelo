@@ -19,30 +19,33 @@ type Strategy = {
 // 1n/2n/3n premium multipliers explored against a baseline 4+ night rate.
 // Numbers come from the 2026-05-04 analysis of the Savoy Insular and
 // Monumentalis Booking calendars: both properties charge a flat
-// "1-week-equivalent" total for any 1-3 night stay (per-night = 7×/3.5×/2.33×
-// of the 7-night per-night).
+// Strategies expressed as multipliers vs the 5-night baseline (the
+// longest stay we collect on Booking under the new plan). 5n acts as
+// "normal nightly rate"; the multiplier tells you how much more
+// per-night to charge for shorter stays.
 const STRATEGIES: Strategy[] = [
   {
     key: "savoy",
     name: "A — Savoy match (aggressive)",
-    blurb: "Mirror the lock-out fee Savoy applies: same total for any 1–3 night stay (= 7 × baseline). Maximises revenue per booking but pushes short-stay guests away.",
-    multiplier: (n) => (n <= 3 ? 7 / n : 1),
+    blurb: "Mirror the lock-out fee Savoy applies: same total for any 1–5 night stay (per-night = 5/n × baseline). Maximises revenue per booking but pushes short-stay guests away.",
+    multiplier: (n) => (n <= 5 ? 5 / n : 1),
   },
   {
     key: "moderate",
     name: "B — Moderate premium (recommended)",
-    blurb: "1n at 4×, 2n at 2×, 3n at 1.5×. Covers fixed turnover/cleaning costs without scaring off weekend couples or business travellers.",
-    multiplier: (n) => (n === 1 ? 4 : n === 2 ? 2 : n === 3 ? 1.5 : 1),
+    blurb: "1n at 3×, 2n at 1.8×, 3n at 1.4×, 4n at 1.15×. Covers fixed turnover/cleaning costs without scaring off weekend couples or business travellers.",
+    multiplier: (n) =>
+      n === 1 ? 3 : n === 2 ? 1.8 : n === 3 ? 1.4 : n === 4 ? 1.15 : 1,
   },
   {
     key: "curve",
     name: "C — Declining curve",
-    blurb: "Smooth multiplier 1 + 6/n² that decays continuously: 1n=7×, 2n=2.5×, 3n=1.67×, 4n=1.38×, 7n=1.12×, 14n=1.03×. UX-friendly, no hard cliff at 4 nights.",
-    multiplier: (n) => Math.max(1, 1 + 6 / (n * n)),
+    blurb: "Smooth multiplier 1 + 4/n² that decays continuously: 1n=5×, 2n=2×, 3n=1.44×, 4n=1.25×, 5n=1.16×. UX-friendly, no hard cliff.",
+    multiplier: (n) => Math.max(1, 1 + 4 / (n * n)),
   },
 ];
 
-const STAY_LENGTHS = [1, 2, 3, 4, 5, 7, 14];
+const STAY_LENGTHS = [1, 2, 3, 4, 5];
 
 function fmtEUR(n: number): string {
   return `€${Math.round(n).toLocaleString("en-GB")}`;
@@ -64,26 +67,25 @@ export function PricingSimulator({ rows, hotels }: Props) {
   }, [rows]);
 
   const observedSavoyRatios = useMemo(() => {
-    // For each Savoy date with all four stay lengths priced, compute the
-    // per-night ratios to the 7-night per-night rate. The Booking row
-    // stores TOTAL stay price (matches what booking.com shows in its
-    // calendar), so per-night = total / stay_nights before ratio-ing.
+    // For each Savoy date that has the 5-night baseline AND a shorter
+    // stay priced, compute the per-night markup ratio. The Booking row
+    // stores TOTAL stay price (matches what booking.com shows), so
+    // per-night = total / stay_nights before ratio-ing.
     const byDate = new Map<string, Map<number, number>>();
     for (const r of rows) {
       if (!r.brand.startsWith("Savoy")) continue;
       if (r.stayNights == null || r.stayNights <= 0 || r.price == null) continue;
       const k = `${r.brand}__${r.hotelId}__${r.date}`;
       if (!byDate.has(k)) byDate.set(k, new Map());
-      // Convert stored total to per-night for the ratio analysis.
       byDate.get(k)!.set(r.stayNights, r.price / r.stayNights);
     }
-    const ratios: Record<number, number[]> = { 1: [], 2: [], 3: [] };
+    const ratios: Record<number, number[]> = { 1: [], 2: [], 3: [], 4: [] };
     for (const stays of byDate.values()) {
-      const seven = stays.get(7);
-      if (!seven || seven <= 0) continue;
-      for (const n of [1, 2, 3] as const) {
+      const five = stays.get(5);
+      if (!five || five <= 0) continue;
+      for (const n of [1, 2, 3, 4] as const) {
         const v = stays.get(n);
-        if (v) ratios[n].push(v / seven);
+        if (v) ratios[n].push(v / five);
       }
     }
     const median = (arr: number[]) => {
@@ -91,7 +93,13 @@ export function PricingSimulator({ rows, hotels }: Props) {
       const s = [...arr].sort((a, b) => a - b);
       return s[Math.floor(s.length / 2)];
     };
-    return { 1: median(ratios[1]), 2: median(ratios[2]), 3: median(ratios[3]), n: byDate.size };
+    return {
+      1: median(ratios[1]),
+      2: median(ratios[2]),
+      3: median(ratios[3]),
+      4: median(ratios[4]),
+      n: byDate.size,
+    };
   }, [rows]);
 
   const strategy = STRATEGIES.find((s) => s.key === active) ?? STRATEGIES[1];
@@ -166,27 +174,29 @@ export function PricingSimulator({ rows, hotels }: Props) {
             <tr>
               <th className="text-left font-medium px-3 py-2">Stay length</th>
               <th className="text-right font-medium px-3 py-2">Multiplier</th>
+              <th className="text-right font-medium px-3 py-2">Markup % vs 5-night baseline</th>
               <th className="text-right font-medium px-3 py-2">Displayed per-night</th>
               <th className="text-right font-medium px-3 py-2">Total stay</th>
-              <th className="text-right font-medium px-3 py-2">vs 7-night per-night</th>
             </tr>
           </thead>
           <tbody>
             {projection.map((p) => {
-              const sevenPerNight = baseline * strategy.multiplier(7);
-              const ratio = sevenPerNight > 0 ? p.perNight / sevenPerNight : 0;
+              const fiveBaseline = baseline * strategy.multiplier(5);
+              const markupPct = fiveBaseline > 0 ? (p.perNight / fiveBaseline - 1) * 100 : 0;
               return (
                 <tr key={p.nights} className="border-t border-black/5">
                   <td className="px-3 py-2">
                     {p.nights} night{p.nights > 1 ? "s" : ""}
-                    {p.nights >= 4 && p.nights <= 6 && (
+                    {p.nights === 5 && (
                       <span className="ml-2 text-[10px] uppercase text-ink/40">baseline</span>
                     )}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums">{p.multiplier.toFixed(2)}×</td>
+                  <td className="px-3 py-2 text-right tabular-nums text-ink/70">
+                    {markupPct === 0 ? "—" : `+${markupPct.toFixed(0)}%`}
+                  </td>
                   <td className="px-3 py-2 text-right tabular-nums font-medium">{fmtEUR(p.perNight)}</td>
                   <td className="px-3 py-2 text-right tabular-nums text-ink/70">{fmtEUR(p.total)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums text-ink/60">{ratio.toFixed(2)}×</td>
                 </tr>
               );
             })}
@@ -204,26 +214,32 @@ export function PricingSimulator({ rows, hotels }: Props) {
         ) : (
           <>
             <p className="text-sm text-ink/60">
-              Median ratio of per-night price to 7-night per-night, computed
-              across {observedSavoyRatios.n} Savoy date snapshots in the Sheet.
-              Use these as a real benchmark for whatever strategy you pick.
+              Median ratio of per-night price to <strong>5-night per-night</strong>,
+              computed across {observedSavoyRatios.n} Savoy date snapshots in the
+              Sheet. Use these to size the markup % you charge on your own listings
+              for shorter stays.
             </p>
             <table className="min-w-full text-sm mt-2">
               <thead>
                 <tr className="text-ink/60 text-xs">
                   <th className="text-left font-medium px-2 py-1">Stay</th>
                   <th className="text-right font-medium px-2 py-1">Savoy median ratio</th>
+                  <th className="text-right font-medium px-2 py-1">Markup vs 5n</th>
                   <th className="text-right font-medium px-2 py-1">Savoy implied per-night @ €{baseline} baseline</th>
                 </tr>
               </thead>
               <tbody>
-                {[1, 2, 3].map((n) => {
+                {[1, 2, 3, 4].map((n) => {
                   const r = (observedSavoyRatios as Record<number, number | null>)[n];
+                  const markup = r == null ? null : (r - 1) * 100;
                   return (
                     <tr key={n} className="border-t border-black/5">
                       <td className="px-2 py-1">{n} night{n > 1 ? "s" : ""}</td>
                       <td className="px-2 py-1 text-right tabular-nums">
                         {r == null ? "—" : `${r.toFixed(2)}×`}
+                      </td>
+                      <td className="px-2 py-1 text-right tabular-nums">
+                        {markup == null ? "—" : `+${markup.toFixed(0)}%`}
                       </td>
                       <td className="px-2 py-1 text-right tabular-nums">
                         {r == null ? "—" : fmtEUR(baseline * r)}
@@ -232,8 +248,9 @@ export function PricingSimulator({ rows, hotels }: Props) {
                   );
                 })}
                 <tr className="border-t border-black/5">
-                  <td className="px-2 py-1">7 nights (baseline)</td>
+                  <td className="px-2 py-1">5 nights (baseline)</td>
                   <td className="px-2 py-1 text-right tabular-nums">1.00×</td>
+                  <td className="px-2 py-1 text-right tabular-nums">—</td>
                   <td className="px-2 py-1 text-right tabular-nums">{fmtEUR(baseline)}</td>
                 </tr>
               </tbody>

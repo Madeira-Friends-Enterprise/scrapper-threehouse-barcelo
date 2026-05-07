@@ -179,7 +179,8 @@ export function PriceTable({ rows, hotels }: Props) {
             <option value="1">1 night</option>
             <option value="2">2 nights</option>
             <option value="3">3 nights</option>
-            <option value="7">7 nights (weekly)</option>
+            <option value="4">4 nights</option>
+            <option value="5">5 nights (baseline)</option>
           </select>
         </label>
 
